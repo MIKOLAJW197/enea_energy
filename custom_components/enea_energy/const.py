@@ -11,7 +11,6 @@ CONF_CURRENT_CLIENT_ID = "current_client_id"
 # Jaka część energii oddanej do sieci liczy się jako „do odbioru” (prosument, domyślnie 80%).
 CONF_EXPORT_RECOVERY_PERCENT = "export_recovery_percent"
 
-DATA_LAG_DAYS = 3
 DEFAULT_EXPORT_RECOVERY_PERCENT = 80
 
 # Codzienne sprawdzenie nowych dni (czas lokalny HA).
