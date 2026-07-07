@@ -36,3 +36,9 @@ ENEA_FORM_TOKEN_FIELD = "token"
 
 # Opcjonalnie: stałe dodatkowe pola POST (poza tokenem z HTML)
 ENEA_LOGIN_EXTRA_FIELDS: dict[str, str] | None = None
+
+# eBOK wymaga zgody Cookiebot przed POST logowania (inaczej formularz się nie wysyła).
+ENEA_COOKIEBOT_CONSENT_VALUE = (
+    "{stamp:'-1',necessary:true,preferences:true,"
+    "statistics:true,marketing:true,method:'implied',ver:1,utc:1700000000000}"
+)

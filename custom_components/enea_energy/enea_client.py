@@ -10,7 +10,10 @@ from datetime import date
 
 import aiohttp
 
+from yarl import URL
+
 from .const import (
+    ENEA_COOKIEBOT_CONSENT_VALUE,
     ENEA_DASHBOARD_MANY_CLIENTS_URL,
     ENEA_FORM_PASSWORD_FIELD,
     ENEA_FORM_TOKEN_FIELD,
@@ -32,6 +35,8 @@ _BROWSERS = {
     ),
     "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
 }
+
+_COOKIEBOT_HEADER = f"CookieConsent={ENEA_COOKIEBOT_CONSENT_VALUE}"
 
 _METER_HEADERS = {
     **_BROWSERS,
@@ -160,15 +165,23 @@ class EneaClient:
         self._require_login_urls()
         assert ENEA_LOGIN_SUBMIT_URL is not None
 
-        page_url = ENEA_LOGIN_PAGE_URL or ENEA_LOGIN_SUBMIT_URL
+        ebok_url = URL("https://ebok.enea.pl")
         if clear_cookies:
             self._session.cookie_jar.clear()
+        self._session.cookie_jar.update_cookies(
+            {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
+            response_url=ebok_url,
+        )
+
+        page_url = ENEA_LOGIN_PAGE_URL or ENEA_LOGIN_SUBMIT_URL
+        if clear_cookies:
             sep = "&" if "?" in page_url else "?"
             page_url = f"{page_url}{sep}_nc={int(time.time() * 1000)}"
 
         page_headers = {
             **_BROWSERS,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Cookie": _COOKIEBOT_HEADER,
         }
         async with self._session.get(page_url, headers=page_headers) as resp:
             resp.raise_for_status()
@@ -184,7 +197,12 @@ class EneaClient:
         if ENEA_LOGIN_EXTRA_FIELDS:
             payload.update(ENEA_LOGIN_EXTRA_FIELDS)
 
-        post_headers = {**_BROWSERS, "Referer": page_url, "Origin": "https://ebok.enea.pl"}
+        post_headers = {
+            **_BROWSERS,
+            "Referer": page_url,
+            "Origin": "https://ebok.enea.pl",
+            "Cookie": _COOKIEBOT_HEADER,
+        }
         async with self._session.post(
             ENEA_LOGIN_SUBMIT_URL,
             data=payload,
