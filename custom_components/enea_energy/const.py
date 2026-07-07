@@ -5,14 +5,13 @@ DOMAIN = "enea_energy"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_START_DATE = "start_date"
-CONF_DATA_LAG_DAYS = "data_lag_days"
 CONF_POINT_OF_DELIVERY_ID = "point_of_delivery_id"
 # UUID z URL po kliknięciu klienta: .../dashboard/select-current-client/<tu>
 CONF_CURRENT_CLIENT_ID = "current_client_id"
 # Jaka część energii oddanej do sieci liczy się jako „do odbioru” (prosument, domyślnie 80%).
 CONF_EXPORT_RECOVERY_PERCENT = "export_recovery_percent"
 
-DEFAULT_DATA_LAG_DAYS = 3
+DATA_LAG_DAYS = 3
 DEFAULT_EXPORT_RECOVERY_PERCENT = 80
 
 # Codzienne sprawdzenie nowych dni (czas lokalny HA).

@@ -26,6 +26,7 @@ PLATFORMS: list[str] = []
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LEGACY_UPDATE_INTERVAL_HOURS = "update_interval_hours"
+_LEGACY_DATA_LAG_DAYS = "data_lag_days"
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -40,6 +41,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if version == 2:
         data.pop(_LEGACY_UPDATE_INTERVAL_HOURS, None)
         version = 3
+
+    if version == 3:
+        data.pop(_LEGACY_DATA_LAG_DAYS, None)
+        version = 4
 
     if version != entry.version:
         hass.config_entries.async_update_entry(entry, data=data, version=version)

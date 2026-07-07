@@ -14,13 +14,12 @@ from homeassistant.util import dt as dt_util
 from .balancing_parser import EneaBalancingParseError, parse_balancing_json
 from .const import (
     CONF_CURRENT_CLIENT_ID,
-    CONF_DATA_LAG_DAYS,
     CONF_EXPORT_RECOVERY_PERCENT,
     CONF_PASSWORD,
     CONF_POINT_OF_DELIVERY_ID,
     CONF_START_DATE,
     CONF_USERNAME,
-    DEFAULT_DATA_LAG_DAYS,
+    DATA_LAG_DAYS,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
     STORAGE_VERSION,
@@ -121,7 +120,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry.data.get(CONF_CURRENT_CLIENT_ID, "")
         ).strip()
         self._start_date = date.fromisoformat(entry.data[CONF_START_DATE])
-        self._data_lag_days = int(entry.data.get(CONF_DATA_LAG_DAYS, DEFAULT_DATA_LAG_DAYS))
         pct = int(entry.data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT))
         self._export_recovery_ratio = max(0.0, min(1.0, pct / 100.0))
 
@@ -199,7 +197,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _status_payload(self, available_end: date) -> dict[str, Any]:
         return {
             "available_through": available_end.isoformat(),
-            "data_lag_days": self._data_lag_days,
+            "data_lag_days": DATA_LAG_DAYS,
             "configured_start_date": self._start_date.isoformat(),
             "statistic_id_import": self.statistic_id_import,
             "statistic_id_export": self.statistic_id_export,
@@ -346,7 +344,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._async_load_store()
         await self._async_apply_start_date_change()
 
-        available_end = self._today_local() - timedelta(days=self._data_lag_days)
+        available_end = self._today_local() - timedelta(days=DATA_LAG_DAYS)
         last_str = self._persisted.get("last_synced_day")
         last_synced: date | None = date.fromisoformat(last_str) if last_str else None
 
@@ -359,7 +357,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "ostatni dozwolony (dziś − opóźnienie %s dni)=%s, ostatnio zsynchronizowano=%s",
             self._start_date.isoformat(),
             start.isoformat(),
-            self._data_lag_days,
+            DATA_LAG_DAYS,
             available_end.isoformat(),
             last_synced.isoformat() if last_synced else "(brak)",
         )
