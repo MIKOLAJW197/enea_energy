@@ -59,8 +59,10 @@ class EneaEnergyBalanceSensor(CoordinatorEntity[EneaEnergyCoordinator], SensorEn
             return None
         data = self.coordinator.data
         return {
-            "cum_import_kwh": data.get("cum_import_kwh"),
-            "cum_export_kwh": data.get("cum_export_kwh"),
+            "period_import_kwh": data.get("period_import_kwh"),
+            "period_export_kwh": data.get("period_export_kwh"),
+            "balance_period_start": data.get("balance_period_start"),
+            "configured_start_date": data.get("configured_start_date"),
             "export_recovery_percent": data.get("export_recovery_percent"),
             "last_data_date": data.get("last_data_date"),
         }
