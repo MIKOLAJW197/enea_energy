@@ -14,14 +14,11 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     CONF_CURRENT_CLIENT_ID,
-    CONF_DATA_LAG_DAYS,
     CONF_EXPORT_RECOVERY_PERCENT,
     CONF_PASSWORD,
     CONF_POINT_OF_DELIVERY_ID,
     CONF_START_DATE,
-    CONF_UPDATE_INTERVAL_HOURS,
     CONF_USERNAME,
-    DEFAULT_DATA_LAG_DAYS,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
 )
@@ -58,8 +55,6 @@ def _entry_schema_defaults(entry_data: dict[str, Any]) -> dict[str, Any]:
         CONF_POINT_OF_DELIVERY_ID: entry_data.get(CONF_POINT_OF_DELIVERY_ID, ""),
         CONF_CURRENT_CLIENT_ID: entry_data.get(CONF_CURRENT_CLIENT_ID, ""),
         CONF_START_DATE: entry_data.get(CONF_START_DATE, DEFAULT_BACKFILL_START),
-        CONF_DATA_LAG_DAYS: int(entry_data.get(CONF_DATA_LAG_DAYS, DEFAULT_DATA_LAG_DAYS)),
-        CONF_UPDATE_INTERVAL_HOURS: int(entry_data.get(CONF_UPDATE_INTERVAL_HOURS, 6)),
         CONF_EXPORT_RECOVERY_PERCENT: int(
             entry_data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT)
         ),
@@ -80,12 +75,6 @@ def _build_data_schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults[CONF_CURRENT_CLIENT_ID],
             ): str,
             vol.Optional(CONF_START_DATE, default=defaults[CONF_START_DATE]): str,
-            vol.Optional(CONF_DATA_LAG_DAYS, default=defaults[CONF_DATA_LAG_DAYS]): vol.Coerce(
-                int
-            ),
-            vol.Optional(
-                CONF_UPDATE_INTERVAL_HOURS, default=defaults[CONF_UPDATE_INTERVAL_HOURS]
-            ): vol.Coerce(int),
             vol.Optional(
                 CONF_EXPORT_RECOVERY_PERCENT,
                 default=defaults[CONF_EXPORT_RECOVERY_PERCENT],
@@ -97,7 +86,7 @@ def _build_data_schema(defaults: dict[str, Any]) -> vol.Schema:
 class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Konfiguracja i ponowna konfiguracja integracji."""
 
-    VERSION = 2
+    VERSION = 4
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -125,8 +114,6 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_POINT_OF_DELIVERY_ID: "",
                 CONF_CURRENT_CLIENT_ID: "",
                 CONF_START_DATE: DEFAULT_BACKFILL_START,
-                CONF_DATA_LAG_DAYS: DEFAULT_DATA_LAG_DAYS,
-                CONF_UPDATE_INTERVAL_HOURS: 6,
                 CONF_EXPORT_RECOVERY_PERCENT: DEFAULT_EXPORT_RECOVERY_PERCENT,
             }
         )

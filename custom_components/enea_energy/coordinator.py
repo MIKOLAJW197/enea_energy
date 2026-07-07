@@ -14,14 +14,11 @@ from homeassistant.util import dt as dt_util
 from .balancing_parser import EneaBalancingParseError, parse_balancing_json
 from .const import (
     CONF_CURRENT_CLIENT_ID,
-    CONF_DATA_LAG_DAYS,
     CONF_EXPORT_RECOVERY_PERCENT,
     CONF_PASSWORD,
     CONF_POINT_OF_DELIVERY_ID,
     CONF_START_DATE,
-    CONF_UPDATE_INTERVAL_HOURS,
     CONF_USERNAME,
-    DEFAULT_DATA_LAG_DAYS,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
     STORAGE_VERSION,
@@ -122,9 +119,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry.data.get(CONF_CURRENT_CLIENT_ID, "")
         ).strip()
         self._start_date = date.fromisoformat(entry.data[CONF_START_DATE])
-        self._data_lag_days = int(entry.data.get(CONF_DATA_LAG_DAYS, DEFAULT_DATA_LAG_DAYS))
-        interval_hours = int(entry.data.get(CONF_UPDATE_INTERVAL_HOURS, 6))
-        update_interval = timedelta(hours=interval_hours)
         pct = int(entry.data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT))
         self._export_recovery_ratio = max(0.0, min(1.0, pct / 100.0))
 
@@ -132,7 +126,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=update_interval,
         )
 
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.entry.entry_id}")
@@ -200,10 +193,9 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _today_local(self) -> date:
         return dt_util.now().date()
 
-    def _status_payload(self, available_end: date) -> dict[str, Any]:
+    def _status_payload(self, sync_through: date) -> dict[str, Any]:
         return {
-            "available_through": available_end.isoformat(),
-            "data_lag_days": self._data_lag_days,
+            "sync_through": sync_through.isoformat(),
             "configured_start_date": self._start_date.isoformat(),
             "statistic_id_import": self.statistic_id_import,
             "statistic_id_export": self.statistic_id_export,
@@ -281,7 +273,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return cum_imp, cum_exp
 
     async def _async_refresh_last_day_hourly_statistics(self, day: date) -> None:
-        """Gdy brak nowych dni — ponownie pobierz ostatnią dozwoloną dobę i nadpisz 24 punktów godzinowych."""
+        """Gdy brak nowych dni — ponownie pobierz ostatnią zsynchronizowaną dobę i nadpisz punkty godzinowe."""
         last_total_imp = float(
             self._persisted.get(
                 "last_day_import_total",
@@ -350,7 +342,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._async_load_store()
         await self._async_apply_start_date_change()
 
-        available_end = self._today_local() - timedelta(days=self._data_lag_days)
+        sync_through = self._today_local()
         last_str = self._persisted.get("last_synced_day")
         last_synced: date | None = date.fromisoformat(last_str) if last_str else None
 
@@ -360,22 +352,21 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         _LOGGER.info(
             "Enea: plan synchronizacji — data początku (config)=%s, pierwszy dzień do pobrania=%s, "
-            "ostatni dozwolony (dziś − opóźnienie %s dni)=%s, ostatnio zsynchronizowano=%s",
+            "ostatni dzień w kolejce (dziś)=%s, ostatnio zsynchronizowano=%s",
             self._start_date.isoformat(),
             start.isoformat(),
-            self._data_lag_days,
-            available_end.isoformat(),
+            sync_through.isoformat(),
             last_synced.isoformat() if last_synced else "(brak)",
         )
 
-        if start > available_end:
+        if last_synced is not None and start > sync_through:
             _LOGGER.info(
                 "Enea: brak nowych dni w kolejce — tylko odświeżenie ostatniej doby %s",
-                available_end.isoformat(),
+                last_synced.isoformat(),
             )
             if self._point_of_delivery_id:
-                await self._async_refresh_last_day_hourly_statistics(available_end)
-            return self._status_payload(available_end)
+                await self._async_refresh_last_day_hourly_statistics(last_synced)
+            return self._status_payload(sync_through)
 
         if not self._point_of_delivery_id:
             raise UpdateFailed(
@@ -383,13 +374,13 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Uzupełnij w konfiguracji integracji."
             )
 
-        day_list = list(_daterange_inclusive(start, available_end))
+        day_list = list(_daterange_inclusive(start, sync_through))
         total_days = len(day_list)
         _LOGGER.info(
             "Enea: backfill — %s dni do pobrania (od %s do %s włącznie)",
             total_days,
             start.isoformat(),
-            available_end.isoformat(),
+            sync_through.isoformat(),
         )
 
         timeout = aiohttp.ClientTimeout(total=120)
@@ -425,11 +416,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     idx,
                     total_days,
                     start.isoformat(),
-                    available_end.isoformat(),
+                    sync_through.isoformat(),
                 )
                 row = await self._async_fetch_row(client, d)
                 if row is None:
-                    continue
+                    _LOGGER.info(
+                        "Enea: brak danych za dzień %s — kończę serię (kolejne dni pomijam)",
+                        d.isoformat(),
+                    )
+                    break
 
                 cum_imp, cum_exp = self._append_hourly_points(
                     row, cum_imp, cum_exp, points_imp, points_exp
@@ -472,5 +467,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     self._persisted["last_data_date"] = last_row.day.isoformat()
                 await self._async_save_store()
+            elif last_synced is not None and self._point_of_delivery_id:
+                await self._async_refresh_last_day_hourly_statistics(last_synced)
 
-        return self._status_payload(available_end)
+        return self._status_payload(sync_through)
