@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-PLATFORMS: list[str] = []
+PLATFORMS: list[str] = ["sensor"]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -76,16 +76,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _schedule_daily_check(hass, entry, coordinator)
     await coordinator.async_config_entry_first_refresh()
 
-    if PLATFORMS:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    if PLATFORMS:
-        ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-        if not ok:
-            return False
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
     if DOMAIN in hass.data:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
