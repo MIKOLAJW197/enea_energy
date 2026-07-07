@@ -12,6 +12,7 @@ CONF_CURRENT_CLIENT_ID = "current_client_id"
 CONF_EXPORT_RECOVERY_PERCENT = "export_recovery_percent"
 
 DEFAULT_EXPORT_RECOVERY_PERCENT = 80
+EXPORT_RECOVERY_PERCENT_OPTIONS = (70, 80)
 
 # Codzienne sprawdzenie nowych dni (czas lokalny HA).
 DAILY_CHECK_HOUR = 20

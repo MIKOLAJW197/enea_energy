@@ -10,7 +10,7 @@
           "point_of_delivery_id": "Punkt poboru — pointOfDeliveryId (POST do summaryBalancingChart)",
           "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/… (wiele umów)",
           "start_date": "Data początku historii (YYYY-MM-DD)",
-          "export_recovery_percent": "Odbiór energii oddanej (%) — np. 80 = tylko 80% oddanej kWh liczy się do bilansu (prosument)"
+          "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
         }
       },
       "reconfigure": {
@@ -22,7 +22,7 @@
           "point_of_delivery_id": "Punkt poboru (pointOfDeliveryId)",
           "current_client_id": "Opcjonalnie: UUID z …/select-current-client/…",
           "start_date": "Data początku historii (YYYY-MM-DD)",
-          "export_recovery_percent": "Odbiór energii oddanej (%) — domyślnie 80"
+          "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
         }
       }
     },
@@ -32,6 +32,14 @@
     },
     "abort": {
       "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana."
+    }
+  },
+  "selectors": {
+    "export_recovery_percent": {
+      "options": {
+        "70": "70% oddanej energii liczy się do bilansu",
+        "80": "80% oddanej energii liczy się do bilansu (domyślnie)"
+      }
     }
   },
   "entity": {

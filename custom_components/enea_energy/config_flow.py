@@ -21,6 +21,7 @@ from .const import (
     CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
+    EXPORT_RECOVERY_PERCENT_OPTIONS,
 )
 
 DEFAULT_BACKFILL_START = (date.today() - timedelta(days=730)).isoformat()
@@ -48,6 +49,13 @@ class InvalidPod(HomeAssistantError):
     """Brak identyfikatora punktu poboru."""
 
 
+def _normalize_export_recovery_percent(value: Any) -> int:
+    pct = int(value) if value is not None else DEFAULT_EXPORT_RECOVERY_PERCENT
+    if pct not in EXPORT_RECOVERY_PERCENT_OPTIONS:
+        return DEFAULT_EXPORT_RECOVERY_PERCENT
+    return pct
+
+
 def _entry_schema_defaults(entry_data: dict[str, Any]) -> dict[str, Any]:
     return {
         CONF_USERNAME: entry_data.get(CONF_USERNAME, ""),
@@ -55,8 +63,8 @@ def _entry_schema_defaults(entry_data: dict[str, Any]) -> dict[str, Any]:
         CONF_POINT_OF_DELIVERY_ID: entry_data.get(CONF_POINT_OF_DELIVERY_ID, ""),
         CONF_CURRENT_CLIENT_ID: entry_data.get(CONF_CURRENT_CLIENT_ID, ""),
         CONF_START_DATE: entry_data.get(CONF_START_DATE, DEFAULT_BACKFILL_START),
-        CONF_EXPORT_RECOVERY_PERCENT: int(
-            entry_data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT)
+        CONF_EXPORT_RECOVERY_PERCENT: _normalize_export_recovery_percent(
+            entry_data.get(CONF_EXPORT_RECOVERY_PERCENT)
         ),
     }
 
@@ -78,7 +86,7 @@ def _build_data_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_EXPORT_RECOVERY_PERCENT,
                 default=defaults[CONF_EXPORT_RECOVERY_PERCENT],
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            ): vol.In(EXPORT_RECOVERY_PERCENT_OPTIONS),
         }
     )
 
