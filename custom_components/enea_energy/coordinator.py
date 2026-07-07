@@ -19,7 +19,6 @@ from .const import (
     CONF_PASSWORD,
     CONF_POINT_OF_DELIVERY_ID,
     CONF_START_DATE,
-    CONF_UPDATE_INTERVAL_HOURS,
     CONF_USERNAME,
     DEFAULT_DATA_LAG_DAYS,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
@@ -123,8 +122,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ).strip()
         self._start_date = date.fromisoformat(entry.data[CONF_START_DATE])
         self._data_lag_days = int(entry.data.get(CONF_DATA_LAG_DAYS, DEFAULT_DATA_LAG_DAYS))
-        interval_hours = int(entry.data.get(CONF_UPDATE_INTERVAL_HOURS, 6))
-        update_interval = timedelta(hours=interval_hours)
         pct = int(entry.data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT))
         self._export_recovery_ratio = max(0.0, min(1.0, pct / 100.0))
 
@@ -132,7 +129,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=update_interval,
         )
 
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.entry.entry_id}")

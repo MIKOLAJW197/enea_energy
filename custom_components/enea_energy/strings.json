@@ -11,7 +11,6 @@
           "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/… (wiele umów)",
           "start_date": "Data początku historii (YYYY-MM-DD)",
           "data_lag_days": "Opóźnienie danych (dni) — np. 3",
-          "update_interval_hours": "Co ile godzin sprawdzać nowe dni",
           "export_recovery_percent": "Odbiór energii oddanej (%) — np. 80 = tylko 80% oddanej kWh liczy się do bilansu (prosument)"
         }
       },
@@ -25,7 +24,6 @@
           "current_client_id": "Opcjonalnie: UUID z …/select-current-client/…",
           "start_date": "Data początku historii (YYYY-MM-DD)",
           "data_lag_days": "Opóźnienie danych (dni)",
-          "update_interval_hours": "Co ile godzin sprawdzać nowe dni",
           "export_recovery_percent": "Odbiór energii oddanej (%) — domyślnie 80"
         }
       }
