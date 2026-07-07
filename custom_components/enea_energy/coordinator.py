@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -132,6 +133,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._persisted: dict[str, Any] = {}
 
     @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.entry.entry_id)},
+            name=self.entry.title,
+            manufacturer="Enea",
+            model="eBOK",
+        )
+
+    @property
     def statistic_id_import(self) -> str:
         suf = _safe_statistic_suffix(self.entry.entry_id)
         return f"{DOMAIN}:{suf}_grid_import"
@@ -203,6 +213,10 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "backfill_oldest_synced_day": self._persisted.get("oldest_synced_day"),
             "cum_import_kwh": float(self._persisted.get("cum_import_kwh", 0.0)),
             "cum_export_kwh": float(self._persisted.get("cum_export_kwh", 0.0)),
+            "energy_balance_kwh": (
+                float(self._persisted.get("cum_export_kwh", 0.0))
+                - float(self._persisted.get("cum_import_kwh", 0.0))
+            ),
             "last_data_date": self._persisted.get("last_data_date"),
             "last_day_import_total_kwh": self._persisted.get("last_day_import_total"),
             "last_day_export_total_kwh": self._persisted.get("last_day_export_total"),
