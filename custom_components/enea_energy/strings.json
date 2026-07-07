@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Enea Energy",
+        "description": "Dwa UUID: pointOfDeliveryId z POST summaryBalancingChart; przy wielu klientach na koncie dodatkowo current_client_id z adresu …/dashboard/select-current-client/<UUID> po kliknięciu właściwej umowy. Dane godzinowe zapisują się jako zewnętrzne statystyki recordera — na pulpicie Lovelace użyj karty Statystyka i wpisz statistic_id (log integracji / Narzędzia deweloperskie → Statystyki).",
+        "data": {
+          "username": "Adres e-mail (eBOK)",
+          "password": "Hasło",
+          "point_of_delivery_id": "Punkt poboru — pointOfDeliveryId (POST do summaryBalancingChart)",
+          "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/… (wiele umów)",
+          "start_date": "Data początku historii (YYYY-MM-DD)",
+          "data_lag_days": "Opóźnienie danych (dni) — np. 3",
+          "update_interval_hours": "Co ile godzin sprawdzać nowe dni",
+          "export_recovery_percent": "Odbiór energii oddanej (%) — np. 80 = tylko 80% oddanej kWh liczy się do bilansu (prosument)"
+        }
+      },
+      "reconfigure": {
+        "title": "Enea Energy",
+        "description": "Zmiana ustawień. Hasło: zostaw puste, żeby nie zmieniać.",
+        "data": {
+          "username": "Adres e-mail (eBOK)",
+          "password": "Hasło (puste = bez zmiany)",
+          "point_of_delivery_id": "Punkt poboru (pointOfDeliveryId)",
+          "current_client_id": "Opcjonalnie: UUID z …/select-current-client/…",
+          "start_date": "Data początku historii (YYYY-MM-DD)",
+          "data_lag_days": "Opóźnienie danych (dni)",
+          "update_interval_hours": "Co ile godzin sprawdzać nowe dni",
+          "export_recovery_percent": "Odbiór energii oddanej (%) — domyślnie 80"
+        }
+      }
+    },
+    "error": {
+      "invalid_start_date": "Niepoprawna data (oczekiwany format YYYY-MM-DD).",
+      "invalid_point_of_delivery": "Podaj identyfikator punktu poboru (UUID z DevTools → Network)."
+    },
+    "abort": {
+      "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana."
+    }
+  }
+}
