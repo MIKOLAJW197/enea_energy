@@ -11,6 +11,7 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.selector import DateSelector
 
 from .const import (
     CONF_CURRENT_CLIENT_ID,
@@ -21,6 +22,7 @@ from .const import (
     CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
+    EXPORT_RECOVERY_PERCENT_OPTIONS,
 )
 
 DEFAULT_BACKFILL_START = (date.today() - timedelta(days=730)).isoformat()
@@ -30,14 +32,35 @@ def _parse_iso_date(value: str) -> date:
     return date.fromisoformat(value.strip())
 
 
+def _normalize_start_date(value: Any, *, default: str | None = None) -> str:
+    if value is None:
+        if default is None:
+            raise ValueError("missing date")
+        return default
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        return _parse_iso_date(str(value)).isoformat()
+    except ValueError as err:
+        if default is not None:
+            return default
+        raise InvalidDate from err
+
+
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Walidacja pól konfiguracji."""
     try:
-        _parse_iso_date(data[CONF_START_DATE])
-    except ValueError as err:
-        raise InvalidDate from err
+        _normalize_start_date(data[CONF_START_DATE])
+    except InvalidDate:
+        raise
     if not str(data.get(CONF_POINT_OF_DELIVERY_ID, "")).strip():
         raise InvalidPod
+
+
+def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
+    normalized = {**user_input}
+    normalized[CONF_START_DATE] = _normalize_start_date(user_input[CONF_START_DATE])
+    return normalized
 
 
 class InvalidDate(HomeAssistantError):
@@ -48,15 +71,25 @@ class InvalidPod(HomeAssistantError):
     """Brak identyfikatora punktu poboru."""
 
 
+def _normalize_export_recovery_percent(value: Any) -> int:
+    pct = int(value) if value is not None else DEFAULT_EXPORT_RECOVERY_PERCENT
+    if pct not in EXPORT_RECOVERY_PERCENT_OPTIONS:
+        return DEFAULT_EXPORT_RECOVERY_PERCENT
+    return pct
+
+
 def _entry_schema_defaults(entry_data: dict[str, Any]) -> dict[str, Any]:
     return {
         CONF_USERNAME: entry_data.get(CONF_USERNAME, ""),
         CONF_PASSWORD: "",
         CONF_POINT_OF_DELIVERY_ID: entry_data.get(CONF_POINT_OF_DELIVERY_ID, ""),
         CONF_CURRENT_CLIENT_ID: entry_data.get(CONF_CURRENT_CLIENT_ID, ""),
-        CONF_START_DATE: entry_data.get(CONF_START_DATE, DEFAULT_BACKFILL_START),
-        CONF_EXPORT_RECOVERY_PERCENT: int(
-            entry_data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT)
+        CONF_START_DATE: _normalize_start_date(
+            entry_data.get(CONF_START_DATE),
+            default=DEFAULT_BACKFILL_START,
+        ),
+        CONF_EXPORT_RECOVERY_PERCENT: _normalize_export_recovery_percent(
+            entry_data.get(CONF_EXPORT_RECOVERY_PERCENT)
         ),
     }
 
@@ -74,11 +107,11 @@ def _build_data_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_CURRENT_CLIENT_ID,
                 default=defaults[CONF_CURRENT_CLIENT_ID],
             ): str,
-            vol.Optional(CONF_START_DATE, default=defaults[CONF_START_DATE]): str,
+            vol.Optional(CONF_START_DATE, default=defaults[CONF_START_DATE]): DateSelector(),
             vol.Optional(
                 CONF_EXPORT_RECOVERY_PERCENT,
                 default=defaults[CONF_EXPORT_RECOVERY_PERCENT],
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            ): vol.In(EXPORT_RECOVERY_PERCENT_OPTIONS),
         }
     )
 
@@ -93,6 +126,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            user_input = _normalize_user_input(user_input)
             try:
                 await validate_input(self.hass, user_input)
             except InvalidDate:
@@ -131,6 +165,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            user_input = _normalize_user_input(user_input)
             new_data = {**entry.data, **user_input}
             new_data[CONF_POINT_OF_DELIVERY_ID] = user_input[
                 CONF_POINT_OF_DELIVERY_ID
