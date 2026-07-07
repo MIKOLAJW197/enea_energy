@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -105,6 +107,12 @@ def _safe_statistic_suffix(entry_id: str) -> str:
     return s or "entry"
 
 
+def _period_anniversary(anchor: date, year: int) -> date:
+    """Rocznica daty początku okresu (np. 29.02 → 28.02 w latach nieprzestępnych)."""
+    day = min(anchor.day, monthrange(year, anchor.month)[1])
+    return date(year, anchor.month, day)
+
+
 class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Pobiera dane z eBOK i zapisuje skumulowane statystyki godzinowe (async_add_external_statistics)."""
 
@@ -132,6 +140,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._persisted: dict[str, Any] = {}
 
     @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.entry.entry_id)},
+            name=self.entry.title,
+            manufacturer="Enea",
+            model="eBOK",
+        )
+
+    @property
     def statistic_id_import(self) -> str:
         suf = _safe_statistic_suffix(self.entry.entry_id)
         return f"{DOMAIN}:{suf}_grid_import"
@@ -152,6 +169,12 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._persisted["cum_import_kwh"] = 0.0
         self._persisted["cum_export_kwh"] = 0.0
         self._persisted.pop("oldest_synced_day", None)
+        self._reset_balance_period()
+
+    def _reset_balance_period(self) -> None:
+        self._persisted.pop("balance_period_start", None)
+        self._persisted.pop("balance_baseline_import_kwh", None)
+        self._persisted.pop("balance_baseline_export_kwh", None)
 
     async def _async_apply_start_date_change(self) -> None:
         key = "sync_start_date"
@@ -174,6 +197,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 changed = True
         if prev != cur:
             self._persisted[key] = cur
+            self._reset_balance_period()
             changed = True
         ls = self._persisted.get("last_synced_day")
         if (
@@ -193,16 +217,63 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _today_local(self) -> date:
         return dt_util.now().date()
 
+    def _current_balance_period_start(self, today: date) -> date:
+        """Początek bieżącego okresu rozliczeniowego (rocznica daty startu z konfiguracji)."""
+        if today < self._start_date:
+            return self._start_date
+        candidate = _period_anniversary(self._start_date, today.year)
+        if candidate <= today:
+            return candidate
+        return _period_anniversary(self._start_date, today.year - 1)
+
+    async def _async_apply_balance_period_rollover(self) -> None:
+        """Wyzeruj bilans sensora na początku nowego okresu (np. 01.02 → 01.02 nast. roku)."""
+        period_start = self._current_balance_period_start(self._today_local())
+        stored = self._persisted.get("balance_period_start")
+        if stored == period_start.isoformat():
+            return
+
+        cum_imp = float(self._persisted.get("cum_import_kwh", 0.0))
+        cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
+        if stored is not None:
+            _LOGGER.info(
+                "Enea: nowy okres bilansu od %s — sensor startuje od zera "
+                "(bazowy import=%.3f kWh, eksport=%.3f kWh)",
+                period_start.isoformat(),
+                cum_imp,
+                cum_exp,
+            )
+
+        self._persisted["balance_period_start"] = period_start.isoformat()
+        self._persisted["balance_baseline_import_kwh"] = cum_imp
+        self._persisted["balance_baseline_export_kwh"] = cum_exp
+        await self._async_save_store()
+
+    def _period_energy_balance_kwh(self) -> float:
+        cum_imp = float(self._persisted.get("cum_import_kwh", 0.0))
+        cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
+        base_imp = float(self._persisted.get("balance_baseline_import_kwh", 0.0))
+        base_exp = float(self._persisted.get("balance_baseline_export_kwh", 0.0))
+        return (cum_exp - base_exp) - (cum_imp - base_imp)
+
     def _status_payload(self, sync_through: date) -> dict[str, Any]:
+        cum_imp = float(self._persisted.get("cum_import_kwh", 0.0))
+        cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
+        base_imp = float(self._persisted.get("balance_baseline_import_kwh", 0.0))
+        base_exp = float(self._persisted.get("balance_baseline_export_kwh", 0.0))
         return {
             "sync_through": sync_through.isoformat(),
             "configured_start_date": self._start_date.isoformat(),
+            "balance_period_start": self._persisted.get("balance_period_start"),
             "statistic_id_import": self.statistic_id_import,
             "statistic_id_export": self.statistic_id_export,
             "backfill_last_synced_day": self._persisted.get("last_synced_day"),
             "backfill_oldest_synced_day": self._persisted.get("oldest_synced_day"),
-            "cum_import_kwh": float(self._persisted.get("cum_import_kwh", 0.0)),
-            "cum_export_kwh": float(self._persisted.get("cum_export_kwh", 0.0)),
+            "cum_import_kwh": cum_imp,
+            "cum_export_kwh": cum_exp,
+            "period_import_kwh": cum_imp - base_imp,
+            "period_export_kwh": cum_exp - base_exp,
+            "energy_balance_kwh": self._period_energy_balance_kwh(),
             "last_data_date": self._persisted.get("last_data_date"),
             "last_day_import_total_kwh": self._persisted.get("last_day_import_total"),
             "last_day_export_total_kwh": self._persisted.get("last_day_export_total"),
@@ -341,6 +412,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         await self._async_load_store()
         await self._async_apply_start_date_change()
+        await self._async_apply_balance_period_rollover()
 
         sync_through = self._today_local()
         last_str = self._persisted.get("last_synced_day")

@@ -33,5 +33,12 @@
     "abort": {
       "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana."
     }
+  },
+  "entity": {
+    "sensor": {
+      "energy_balance": {
+        "name": "Bilans energii"
+      }
+    }
   }
 }
