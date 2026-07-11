@@ -361,6 +361,7 @@ def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
                 export_kwh=0.0,
                 hourly_import_kwh=tuple([0.0] * 24),
                 hourly_export_kwh=tuple([0.0] * 24),
+                no_data=True,
             )
         hourly_table = _parse_hourly_row_array(root, day)
         if hourly_table is not None:

@@ -18,6 +18,10 @@ EXPORT_RECOVERY_PERCENT_OPTIONS = (70, 80)
 DAILY_CHECK_HOUR = 20
 DAILY_CHECK_MINUTE = 0
 
+# eBOK zwykle publikuje doby z opóźnieniem; nie synchronizuj „dziś” i traktuj świeże [] jako brak danych.
+SYNC_LAG_DAYS = 1
+RECENT_DATA_LAG_DAYS = 3
+
 STORAGE_KEY = "enea_energy_store"
 STORAGE_VERSION = 1
 
