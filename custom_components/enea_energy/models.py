@@ -15,3 +15,5 @@ class DailyEnergyRow:
     export_kwh: float
     hourly_import_kwh: tuple[float, ...] = ()
     hourly_export_kwh: tuple[float, ...] = ()
+    # API zwróciło [] — dzień jeszcze nieopublikowany (nie traktować jako 0 kWh).
+    no_data: bool = False

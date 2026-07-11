@@ -23,7 +23,9 @@ from .const import (
     CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
+    RECENT_DATA_LAG_DAYS,
     STORAGE_VERSION,
+    SYNC_LAG_DAYS,
 )
 from .enea_client import EneaClient, EneaClientAuthError, EneaClientConfigError
 from .models import DailyEnergyRow
@@ -76,6 +78,23 @@ def _hourly_deltas(row: DailyEnergyRow) -> list[tuple[float, float]]:
             for h in range(24)
         ]
     return [(row.import_kwh, row.export_kwh)] + [(0.0, 0.0)] * 23
+
+
+def _day_hourly_totals(row: DailyEnergyRow) -> tuple[float, float]:
+    """Suma segmentów godzinowych — spójna z _append_hourly_points i skumulowaniem."""
+    deltas = _hourly_deltas(row)
+    return sum(d[0] for d in deltas), sum(d[1] for d in deltas)
+
+
+def _row_lacks_published_data(row: DailyEnergyRow, today: date) -> bool:
+    """True gdy API nie opublikowało jeszcze doby (pusta odpowiedź lub świeże same zera)."""
+    if row.no_data:
+        return True
+    cutoff = today - timedelta(days=RECENT_DATA_LAG_DAYS)
+    if row.day <= cutoff:
+        return False
+    imp_total, exp_total = _day_hourly_totals(row)
+    return imp_total == 0.0 and exp_total == 0.0
 
 
 def _persist_cumulative_from_statistic_points(
@@ -216,6 +235,108 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _today_local(self) -> date:
         return dt_util.now().date()
+
+    def _sync_through_local(self) -> date:
+        """Ostatni dzień do pobrania (zwykle wczoraj — eBOK nie ma pełnej doby „dziś”)."""
+        return self._today_local() - timedelta(days=SYNC_LAG_DAYS)
+
+    def _migrate_nonempty_sync_cursor(self) -> None:
+        """Istniejące instalacje: kursor ostatniej doby z realnymi danymi."""
+        if self._persisted.get("last_nonempty_synced_day"):
+            return
+        last = self._persisted.get("last_synced_day")
+        if last:
+            self._persisted["last_nonempty_synced_day"] = last
+
+    def _cursor_looks_like_empty_placeholder(self) -> bool:
+        """Kursor zsynchronizowany, ale ostatnia doba ma same zera — typowe po starym []."""
+        if not self._persisted.get("last_synced_day"):
+            return False
+        last_imp = float(self._persisted.get("last_day_import_total", 0.0))
+        last_exp = float(self._persisted.get("last_day_export_total", 0.0))
+        return last_imp == 0.0 and last_exp == 0.0
+
+    async def _async_probe_last_published_day(
+        self,
+        client: EneaClient,
+        *,
+        through: date,
+        max_lookback_days: int = 31,
+    ) -> date | None:
+        """Szuka wstecz ostatniej doby z realnymi danymi w eBOK (naprawa kursora)."""
+        today = self._today_local()
+        d = through
+        min_d = max(self._start_date, through - timedelta(days=max_lookback_days))
+        while d >= min_d:
+            row = await self._async_fetch_row(client, d)
+            if row is not None and not _row_lacks_published_data(row, today):
+                return d
+            d -= timedelta(days=1)
+        return None
+
+    async def _async_heal_sync_cursor_from_api(self, last_synced: date | None) -> date | None:
+        """Cofa last_synced do ostatniej opublikowanej doby, gdy kursor przeskoczył przez []."""
+        if last_synced is None or not self._point_of_delivery_id:
+            return last_synced
+        if not self._cursor_looks_like_empty_placeholder():
+            return self._heal_sync_cursor(last_synced)
+
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            client = EneaClient(
+                session,
+                self._username,
+                self._password,
+                self._point_of_delivery_id,
+                self._current_client_id,
+            )
+            try:
+                login_final = await client.async_login()
+                await client.async_prepare_meter_session(login_final)
+            except (EneaClientConfigError, EneaClientAuthError) as err:
+                _LOGGER.warning("Enea: korekta kursora — logowanie nieudane: %s", err)
+                return self._heal_sync_cursor(last_synced)
+
+            published = await self._async_probe_last_published_day(
+                client, through=last_synced
+            )
+
+        if published is None or published >= last_synced:
+            return self._heal_sync_cursor(last_synced)
+
+        _LOGGER.warning(
+            "Enea: korekta kursora z API — ostatnia doba z danymi %s (było %s)",
+            published.isoformat(),
+            last_synced.isoformat(),
+        )
+        self._persisted["last_synced_day"] = published.isoformat()
+        self._persisted["last_nonempty_synced_day"] = published.isoformat()
+        await self._async_save_store()
+        return published
+
+    def _heal_sync_cursor(self, last_synced: date | None) -> date | None:
+        """Cofnij last_synced, jeśli wcześniej przesunęło się przez dni bez danych z API."""
+        nonempty_str = self._persisted.get("last_nonempty_synced_day")
+        if not nonempty_str or last_synced is None:
+            return last_synced
+        nonempty = date.fromisoformat(nonempty_str)
+        if last_synced > nonempty:
+            _LOGGER.warning(
+                "Enea: korekta synchronizacji — ostatnio opublikowana doba %s, "
+                "kursor był na %s (pominięte dni bez danych). Ponawiam od %s.",
+                nonempty.isoformat(),
+                last_synced.isoformat(),
+                (nonempty + timedelta(days=1)).isoformat(),
+            )
+            self._persisted["last_synced_day"] = nonempty.isoformat()
+            return nonempty
+        return last_synced
+
+    def _store_last_day_totals(self, row: DailyEnergyRow) -> None:
+        imp_total, exp_total = _day_hourly_totals(row)
+        self._persisted["last_day_import_total"] = imp_total
+        self._persisted["last_day_export_total"] = exp_total * self._export_recovery_ratio
+        self._persisted["last_data_date"] = row.day.isoformat()
 
     def _current_balance_period_start(self, today: date) -> date:
         """Początek bieżącego okresu rozliczeniowego (rocznica daty startu z konfiguracji)."""
@@ -378,7 +499,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("Odświeżenie statystyk (dzień %s): %s", day.isoformat(), err)
                 return
             row = await self._async_fetch_row(client, day)
-            if row is None:
+            if row is None or _row_lacks_published_data(row, self._today_local()):
                 return
 
         _LOGGER.info(
@@ -398,9 +519,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _persist_cumulative_from_statistic_points(
             self._persisted, points_imp, points_exp
         )
-        self._persisted["last_day_import_total"] = row.import_kwh
-        self._persisted["last_day_export_total"] = row.export_kwh * self._export_recovery_ratio
-        self._persisted["last_data_date"] = row.day.isoformat()
+        self._store_last_day_totals(row)
         await self._async_save_store()
         _LOGGER.info(
             "Enea: zapisano %s punktów godzinowych (skumulowane import/export do %.3f / %.3f kWh)",
@@ -413,10 +532,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._async_load_store()
         await self._async_apply_start_date_change()
         await self._async_apply_balance_period_rollover()
+        self._migrate_nonempty_sync_cursor()
 
-        sync_through = self._today_local()
+        sync_through = self._sync_through_local()
         last_str = self._persisted.get("last_synced_day")
         last_synced: date | None = date.fromisoformat(last_str) if last_str else None
+        cursor_before_heal = self._persisted.get("last_synced_day")
+        last_synced = await self._async_heal_sync_cursor_from_api(last_synced)
+        if self._persisted.get("last_synced_day") != cursor_before_heal:
+            await self._async_save_store()
 
         start = self._start_date if last_synced is None else last_synced + timedelta(days=1)
         if start < self._start_date:
@@ -424,7 +548,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         _LOGGER.info(
             "Enea: plan synchronizacji — data początku (config)=%s, pierwszy dzień do pobrania=%s, "
-            "ostatni dzień w kolejce (dziś)=%s, ostatnio zsynchronizowano=%s",
+            "ostatni dzień w kolejce=%s, ostatnio zsynchronizowano=%s",
             self._start_date.isoformat(),
             start.isoformat(),
             sync_through.isoformat(),
@@ -493,7 +617,13 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 row = await self._async_fetch_row(client, d)
                 if row is None:
                     _LOGGER.info(
-                        "Enea: brak danych za dzień %s — kończę serię (kolejne dni pomijam)",
+                        "Enea: błąd pobierania za dzień %s — kończę serię (kolejne dni pomijam)",
+                        d.isoformat(),
+                    )
+                    break
+                if _row_lacks_published_data(row, self._today_local()):
+                    _LOGGER.info(
+                        "Enea: eBOK nie opublikował jeszcze doby %s — kończę serię",
                         d.isoformat(),
                     )
                     break
@@ -524,6 +654,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 assert last_ok is not None
                 self._persisted["last_synced_day"] = last_ok.isoformat()
+                self._persisted["last_nonempty_synced_day"] = last_ok.isoformat()
                 if batch_oldest is not None:
                     po = self._persisted.get("oldest_synced_day")
                     if po:
@@ -533,11 +664,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else:
                         self._persisted["oldest_synced_day"] = batch_oldest.isoformat()
                 if last_row is not None:
-                    self._persisted["last_day_import_total"] = last_row.import_kwh
-                    self._persisted["last_day_export_total"] = (
-                        last_row.export_kwh * self._export_recovery_ratio
-                    )
-                    self._persisted["last_data_date"] = last_row.day.isoformat()
+                    self._store_last_day_totals(last_row)
                 await self._async_save_store()
             elif last_synced is not None and self._point_of_delivery_id:
                 await self._async_refresh_last_day_hourly_statistics(last_synced)
