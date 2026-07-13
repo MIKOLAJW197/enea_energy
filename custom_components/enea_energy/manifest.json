@@ -1,6 +1,7 @@
 {
   "domain": "enea_energy",
   "name": "Enea Energy",
+  "icon": "mdi:lightning-bolt",
   "codeowners": ["@MIKOLAJW197"],
   "config_flow": true,
   "dependencies": ["recorder"],
@@ -9,5 +10,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/MIKOLAJW197/enea_energy/issues",
   "requirements": [],
-  "version": "1.0.0"
+  "version": "1.0.1"
 }
