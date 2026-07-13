@@ -30,10 +30,12 @@ Home Assistant custom integration that logs into the Polish **Enea eBOK** portal
 3. Search for **Enea Energy**, install, and restart Home Assistant.
 4. Go to **Settings** → **Devices & Services** → **Add Integration** → **Enea Energy**.
 
-### Manual
+HACS installs tagged releases automatically. See [releases](https://github.com/MIKOLAJW197/enea_energy/releases) for version history.
 
-1. Download the [latest release](https://github.com/MIKOLAJW197/enea_energy/releases) or clone this repository.
-2. Copy the folder `custom_components/enea_energy` into your Home Assistant `config/custom_components/` directory.
+### Manual (from release zip)
+
+1. Download the latest [`enea_energy.zip`](https://github.com/MIKOLAJW197/enea_energy/releases/latest) from GitHub Releases.
+2. Unzip so that `enea_energy/` lands under `config/custom_components/`.
 3. Restart Home Assistant.
 4. Add the integration via **Settings** → **Devices & Services**.
 
@@ -95,6 +97,11 @@ Statistic IDs are logged on first sync and visible under **Developer Tools** →
 ## Disclaimer
 
 This is an unofficial community integration. It is not affiliated with or endorsed by Enea S.A. Use at your own risk. eBOK HTML/API behavior may change without notice.
+
+## Contributing / releases
+
+- [CHANGELOG.md](CHANGELOG.md) — version history
+- [RELEASE.md](RELEASE.md) — how to cut a new release (maintainers)
 
 ## License
 
