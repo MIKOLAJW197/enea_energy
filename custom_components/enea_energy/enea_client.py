@@ -1,4 +1,4 @@
-"""Klient HTTP do logowania i pobierania danych z eBOK Enea."""
+"""HTTP client for Enea eBOK login and data download."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ _METER_HEADERS = {
     "Referer": ENEA_METER_SUMMARY_REFERER,
 }
 
-# Zapasowe wzorce, gdyby parser HTML nie zadziałał (np. zniekształcony markup)
+# Fallback patterns when the HTML parser fails (e.g. malformed markup)
 _TOKEN_REGEX_FALLBACKS = (
     re.compile(
         r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']token["\'][^>]*value=["\']([^"\']*)["\']',
@@ -69,7 +69,7 @@ _TOKEN_REGEX_FALLBACKS = (
 
 
 class _LoginTokenParser(HTMLParser):
-    """Wyciąga value z ukrytego pola name=token (dowolna kolejność atrybutów)."""
+    """Extract value from hidden input name=token (any attribute order)."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -90,11 +90,11 @@ class _LoginTokenParser(HTMLParser):
 
 
 class EneaClientConfigError(RuntimeError):
-    """Brak wymaganej konfiguracji."""
+    """Missing required configuration."""
 
 
 class EneaClientAuthError(RuntimeError):
-    """Błąd logowania."""
+    """Login or session error."""
 
 
 def _extract_login_token(html: str) -> str:
@@ -102,7 +102,7 @@ def _extract_login_token(html: str) -> str:
     try:
         parser.feed(html)
         parser.close()
-    except Exception:  # pragma: no cover — parser nie powinien rzucać na typowym HTML
+    except Exception:  # pragma: no cover — parser should not fail on typical HTML
         pass
     if parser.token:
         return parser.token
@@ -113,11 +113,11 @@ def _extract_login_token(html: str) -> str:
             return m.group(1).strip()
 
     snippet = " ".join(html[:2000].split())
-    _LOGGER.debug("eBOK logowanie: brak tokena, fragment odpowiedzi GET: %s", snippet)
+    _LOGGER.debug("eBOK login: token not found, GET response snippet: %s", snippet)
     raise EneaClientAuthError(
-        "Nie znaleziono ukrytego pola token na stronie logowania. "
-        "Możliwe: zmiana formularza eBOK, blokada cookies (Cookiebot) lub odpowiedź inna niż strona logowania. "
-        "Włącz logowanie DEBUG dla custom_components.enea_energy i sprawdź fragment HTML."
+        "Hidden token field not found on the login page. "
+        "Possible causes: eBOK form change, cookie consent block (Cookiebot), or unexpected response. "
+        "Enable DEBUG logging for custom_components.enea_energy and inspect the HTML snippet."
     )
 
 
@@ -126,7 +126,7 @@ def _format_date_pl(day: date) -> str:
 
 
 class EneaClient:
-    """Sesja: GET logowanie (token), POST logowanie, POST summaryBalancingChart."""
+    """Session: GET login page (token), POST credentials, POST summaryBalancingChart."""
 
     def __init__(
         self,
@@ -145,22 +145,22 @@ class EneaClient:
     def _require_login_urls(self) -> None:
         if not ENEA_LOGIN_SUBMIT_URL:
             raise EneaClientConfigError(
-                "Uzupełnij w const.py: ENEA_LOGIN_SUBMIT_URL (Krok 2)."
+                "Set ENEA_LOGIN_SUBMIT_URL in const.py."
             )
 
     def _require_meter_target(self) -> None:
         if not self._point_of_delivery_id:
             raise EneaClientConfigError(
-                "Brak identyfikatora punktu poboru (point of delivery) — ustaw w konfiguracji integracji."
+                "Missing point of delivery ID — configure it in the integration settings."
             )
         if not ENEA_METER_SUMMARY_URL:
-            raise EneaClientConfigError("Brak ENEA_METER_SUMMARY_URL w const.py.")
+            raise EneaClientConfigError("Missing ENEA_METER_SUMMARY_URL in const.py.")
 
     async def async_login(self, *, clear_cookies: bool = False) -> str:
-        """GET strony logowania (cookies + token), POST danych z eBOK.
+        """GET login page (cookies + token), then POST eBOK credentials.
 
-        ``clear_cookies=True`` — czyści jar (np. po 401): bez tego serwer często zwraca
-        szablon „po zalogowaniu” zamiast formularza i nie ma pola ``token``.
+        ``clear_cookies=True`` clears the jar (e.g. after 401); otherwise the server
+        may return a post-login template without the ``token`` field.
         """
         self._require_login_urls()
         assert ENEA_LOGIN_SUBMIT_URL is not None
@@ -214,21 +214,21 @@ class EneaClient:
             final = str(resp.url)
 
         if status >= 400:
-            raise EneaClientAuthError(f"Logowanie HTTP {status}: {body[:500]!r}")
+            raise EneaClientAuthError(f"Login HTTP {status}: {body[:500]!r}")
 
         if "/logowanie" in final and (
             'id="login-form"' in body or "name=\"logowanie\"" in body
         ):
             raise EneaClientAuthError(
-                "Logowanie odrzucone (nadal strona logowania). "
-                "Sprawdź e-mail, hasło i czy konto nie wymaga dodatkowego kroku w przeglądarce."
+                "Login rejected (still on login page). "
+                "Check e-mail, password, and whether the account needs an extra browser step."
             )
 
-        _LOGGER.debug("Logowanie eBOK zakończone, URL końcowy: %s", final)
+        _LOGGER.debug("eBOK login finished, final URL: %s", final)
         return final
 
     async def _async_select_current_client_context(self) -> None:
-        """GET select-current-client/{id} — wybór kontekstu przy wielu klientach na koncie."""
+        """GET select-current-client/{id} — select context when multiple clients exist."""
         cid = self._current_client_id
         url = f"{ENEA_SELECT_CURRENT_CLIENT_BASE}{cid}"
         headers = {
@@ -243,18 +243,18 @@ class EneaClient:
             status = resp.status
             final = str(resp.url)
         _LOGGER.debug(
-            "eBOK wybór klienta: GET select-current-client → HTTP %s, URL %s",
+            "eBOK client selection: GET select-current-client → HTTP %s, URL %s",
             status,
             final,
         )
         if status >= 400:
             _LOGGER.warning(
-                "Wybór klienta eBOK zwrócił HTTP %s — API licznika może zwracać 401",
+                "eBOK client selection returned HTTP %s — meter API may respond with 401",
                 status,
             )
 
     async def _async_bind_point_from_many_clients_dashboard(self) -> None:
-        """Konto z wieloma umowami: wejście w link z naszym pointOfDeliveryId (sesja pod API /meter/)."""
+        """Multi-contract account: follow link with our pointOfDeliveryId (session for /meter/ API)."""
         pid = self._point_of_delivery_id
         pid_compact = pid.replace("-", "").lower()
         async with self._session.get(
@@ -313,12 +313,12 @@ class EneaClient:
 
         if not to_visit:
             _LOGGER.debug(
-                "eBOK many-clients: brak linku z pointOfDeliveryId w HTML (długość=%s)",
+                "eBOK many-clients: no link with pointOfDeliveryId in HTML (length=%s)",
                 len(html),
             )
 
     async def async_prepare_meter_session(self, login_final_url: str) -> None:
-        """Po zalogowaniu: wybór klienta (wiele umów) lub skan linków + wejście na wykres."""
+        """After login: select client (multi-contract) or scan links and open the chart page."""
         if self._current_client_id:
             await self._async_select_current_client_context()
             referer = ENEA_DASHBOARD_MANY_CLIENTS_URL
@@ -348,12 +348,12 @@ class EneaClient:
                 await resp.read()
                 if resp.status >= 400:
                     _LOGGER.warning(
-                        "Rozgrzewka licznika %s → HTTP %s", path, resp.status
+                        "Meter warm-up %s → HTTP %s", path, resp.status
                     )
             referer = ENEA_METER_SUMMARY_REFERER
 
     async def async_fetch_balancing_json(self, day: date) -> str:
-        """POST summaryBalancingChart — zwraca treść JSON (nie CSV) dla jednego dnia."""
+        """POST summaryBalancingChart — returns JSON body (not CSV) for one day."""
         self._require_meter_target()
         form = {
             "duration": "day",
@@ -368,10 +368,10 @@ class EneaClient:
             text = await resp.text()
             if resp.status == 401:
                 raise EneaClientAuthError(
-                    f"Bilans za {day}: HTTP 401 (brak autoryzacji — sesja eBOK)."
+                    f"Balancing for {day}: HTTP 401 (unauthorized — eBOK session)."
                 )
             if resp.status >= 400:
                 raise RuntimeError(
-                    f"Bilans za {day}: HTTP {resp.status} — {text[:400]!r}"
+                    f"Balancing for {day}: HTTP {resp.status} — {text[:400]!r}"
                 )
         return text

@@ -1,4 +1,4 @@
-"""Coordinator: pobieranie bilansu (JSON), zapis godzinowych statystyk (recorder)."""
+"""Coordinator: fetch balancing JSON and write hourly recorder statistics."""
 
 from __future__ import annotations
 
@@ -49,14 +49,14 @@ def _daterange_inclusive(start: date, end: date):
 
 
 def _log_hourly_vs_daily_totals(row: DailyEnergyRow) -> None:
-    """Ostrzeżenie, gdy suma segmentów ≠ pole dobowe z JSON (wpływa na sens skumulowania)."""
+    """Warn when hourly segment sum differs from daily JSON fields (affects cumulative stats)."""
     deltas = _hourly_deltas(row)
     s_imp = sum(d[0] for d in deltas)
     s_exp = sum(d[1] for d in deltas)
     if abs(s_imp - row.import_kwh) > 0.05 or abs(s_exp - row.export_kwh) > 0.05:
         _LOGGER.warning(
-            "Enea dzień %s: suma segmentów godzinowych (imp=%.4f, exp=%.4f) ≠ doba z API "
-            "(imp=%.4f, exp=%.4f). Skumulowanie i statystyki opierają się na segmentach godzinowych.",
+            "Enea day %s: hourly segment sum (imp=%.4f, exp=%.4f) != daily API "
+            "(imp=%.4f, exp=%.4f). Cumulative stats use hourly segments.",
             row.day.isoformat(),
             s_imp,
             s_exp,
@@ -66,7 +66,7 @@ def _log_hourly_vs_daily_totals(row: DailyEnergyRow) -> None:
 
 
 def _hourly_deltas(row: DailyEnergyRow) -> list[tuple[float, float]]:
-    """24 (lub więcej/mniej) segmentów kWh — preferowane 24 godziny z API."""
+    """24 (or more/fewer) kWh segments — prefer 24 hours from the API."""
     hi = row.hourly_import_kwh
     he = row.hourly_export_kwh
     if hi or he:
@@ -81,13 +81,13 @@ def _hourly_deltas(row: DailyEnergyRow) -> list[tuple[float, float]]:
 
 
 def _day_hourly_totals(row: DailyEnergyRow) -> tuple[float, float]:
-    """Suma segmentów godzinowych — spójna z _append_hourly_points i skumulowaniem."""
+    """Sum of hourly segments — consistent with _append_hourly_points and cumulation."""
     deltas = _hourly_deltas(row)
     return sum(d[0] for d in deltas), sum(d[1] for d in deltas)
 
 
 def _row_lacks_published_data(row: DailyEnergyRow, today: date) -> bool:
-    """True gdy API nie opublikowało jeszcze doby (pusta odpowiedź lub świeże same zera)."""
+    """True when the API has not published the day yet (empty response or recent all zeros)."""
     if row.no_data:
         return True
     cutoff = today - timedelta(days=RECENT_DATA_LAG_DAYS)
@@ -102,14 +102,14 @@ def _persist_cumulative_from_statistic_points(
     points_imp: list[tuple[datetime, float]],
     points_exp: list[tuple[datetime, float]],
 ) -> None:
-    """Skumulowane kWh w storage = ostatni punkt sum zapisany do recordera (1:1 z external statistics)."""
+    """Persisted cumulative kWh = last sum point written to the recorder."""
     if not points_imp or not points_exp:
         return
     n_imp = len(points_imp)
     n_exp = len(points_exp)
     if n_imp != n_exp:
         _LOGGER.warning(
-            "Enea: liczba punktów import (%s) ≠ export (%s) — obcinam do wspólnego końca",
+            "Enea: import point count (%s) != export (%s) — trimming to common length",
             n_imp,
             n_exp,
         )
@@ -127,13 +127,13 @@ def _safe_statistic_suffix(entry_id: str) -> str:
 
 
 def _period_anniversary(anchor: date, year: int) -> date:
-    """Rocznica daty początku okresu (np. 29.02 → 28.02 w latach nieprzestępnych)."""
+    """Anniversary of the period start date (e.g. Feb 29 → Feb 28 in non-leap years)."""
     day = min(anchor.day, monthrange(year, anchor.month)[1])
     return date(year, anchor.month, day)
 
 
 class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Pobiera dane z eBOK i zapisuje skumulowane statystyki godzinowe (async_add_external_statistics)."""
+    """Fetch eBOK data and write cumulative hourly statistics."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
@@ -160,11 +160,13 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def device_info(self) -> DeviceInfo:
+        pod = self._point_of_delivery_id
+        model = f"Metering point {pod[:8]}…" if len(pod) > 8 else "eBOK metering point"
         return DeviceInfo(
             identifiers={(DOMAIN, self.entry.entry_id)},
             name=self.entry.title,
             manufacturer="Enea",
-            model="eBOK",
+            model=model,
         )
 
     @property
@@ -207,8 +209,8 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 prev_d = self._start_date
             if self._start_date < prev_d:
                 _LOGGER.warning(
-                    "Zmieniono datę początku historii na wcześniejszą (%s → poprzednio %s). "
-                    "Resetuję postęp synchronizacji.",
+                    "History start date moved earlier (%s, was %s). "
+                    "Resetting sync progress.",
                     self._start_date,
                     prev_d,
                 )
@@ -225,7 +227,8 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and self._start_date < date.fromisoformat(ls)
         ):
             _LOGGER.warning(
-                "Migracja: niepełny backfill (brak oldest_synced_day). Reset postępu — backfill od %s.",
+                "Migration: incomplete backfill (missing oldest_synced_day). "
+                "Resetting progress — backfill from %s.",
                 self._start_date,
             )
             self._reset_backfill_progress()
@@ -237,11 +240,11 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return dt_util.now().date()
 
     def _sync_through_local(self) -> date:
-        """Ostatni dzień do pobrania (zwykle wczoraj — eBOK nie ma pełnej doby „dziś”)."""
+        """Last day to fetch (usually yesterday — eBOK does not publish a full today)."""
         return self._today_local() - timedelta(days=SYNC_LAG_DAYS)
 
     def _migrate_nonempty_sync_cursor(self) -> None:
-        """Istniejące instalacje: kursor ostatniej doby z realnymi danymi."""
+        """Existing installs: cursor for the last day with real data."""
         if self._persisted.get("last_nonempty_synced_day"):
             return
         last = self._persisted.get("last_synced_day")
@@ -249,7 +252,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._persisted["last_nonempty_synced_day"] = last
 
     def _cursor_looks_like_empty_placeholder(self) -> bool:
-        """Kursor zsynchronizowany, ale ostatnia doba ma same zera — typowe po starym []."""
+        """Synced cursor but last day is all zeros — typical after old []. handling."""
         if not self._persisted.get("last_synced_day"):
             return False
         last_imp = float(self._persisted.get("last_day_import_total", 0.0))
@@ -263,7 +266,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         through: date,
         max_lookback_days: int = 31,
     ) -> date | None:
-        """Szuka wstecz ostatniej doby z realnymi danymi w eBOK (naprawa kursora)."""
+        """Search backward for the last day with real eBOK data (cursor repair)."""
         today = self._today_local()
         d = through
         min_d = max(self._start_date, through - timedelta(days=max_lookback_days))
@@ -275,7 +278,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return None
 
     async def _async_heal_sync_cursor_from_api(self, last_synced: date | None) -> date | None:
-        """Cofa last_synced do ostatniej opublikowanej doby, gdy kursor przeskoczył przez []."""
+        """Move last_synced back to the last published day when cursor skipped empty []."""
         if last_synced is None or not self._point_of_delivery_id:
             return last_synced
         if not self._cursor_looks_like_empty_placeholder():
@@ -294,7 +297,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 login_final = await client.async_login()
                 await client.async_prepare_meter_session(login_final)
             except (EneaClientConfigError, EneaClientAuthError) as err:
-                _LOGGER.warning("Enea: korekta kursora — logowanie nieudane: %s", err)
+                _LOGGER.warning("Enea: cursor repair login failed: %s", err)
                 return self._heal_sync_cursor(last_synced)
 
             published = await self._async_probe_last_published_day(
@@ -305,7 +308,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return self._heal_sync_cursor(last_synced)
 
         _LOGGER.warning(
-            "Enea: korekta kursora z API — ostatnia doba z danymi %s (było %s)",
+            "Enea: cursor repaired from API — last day with data %s (was %s)",
             published.isoformat(),
             last_synced.isoformat(),
         )
@@ -315,15 +318,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return published
 
     def _heal_sync_cursor(self, last_synced: date | None) -> date | None:
-        """Cofnij last_synced, jeśli wcześniej przesunęło się przez dni bez danych z API."""
+        """Move last_synced back if it advanced past days without API data."""
         nonempty_str = self._persisted.get("last_nonempty_synced_day")
         if not nonempty_str or last_synced is None:
             return last_synced
         nonempty = date.fromisoformat(nonempty_str)
         if last_synced > nonempty:
             _LOGGER.warning(
-                "Enea: korekta synchronizacji — ostatnio opublikowana doba %s, "
-                "kursor był na %s (pominięte dni bez danych). Ponawiam od %s.",
+                "Enea: sync cursor repair — last published day %s, "
+                "cursor was at %s (skipped days without data). Resuming from %s.",
                 nonempty.isoformat(),
                 last_synced.isoformat(),
                 (nonempty + timedelta(days=1)).isoformat(),
@@ -339,7 +342,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._persisted["last_data_date"] = row.day.isoformat()
 
     def _current_balance_period_start(self, today: date) -> date:
-        """Początek bieżącego okresu rozliczeniowego (rocznica daty startu z konfiguracji)."""
+        """Start of the current billing period (anniversary of configured start date)."""
         if today < self._start_date:
             return self._start_date
         candidate = _period_anniversary(self._start_date, today.year)
@@ -348,7 +351,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return _period_anniversary(self._start_date, today.year - 1)
 
     async def _async_apply_balance_period_rollover(self) -> None:
-        """Wyzeruj bilans sensora na początku nowego okresu (np. 01.02 → 01.02 nast. roku)."""
+        """Reset balance sensor baseline at the start of a new period."""
         period_start = self._current_balance_period_start(self._today_local())
         stored = self._persisted.get("balance_period_start")
         if stored == period_start.isoformat():
@@ -358,8 +361,8 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
         if stored is not None:
             _LOGGER.info(
-                "Enea: nowy okres bilansu od %s — sensor startuje od zera "
-                "(bazowy import=%.3f kWh, eksport=%.3f kWh)",
+                "Enea: new balance period from %s — sensor baseline reset "
+                "(import=%.3f kWh, export=%.3f kWh)",
                 period_start.isoformat(),
                 cum_imp,
                 cum_exp,
@@ -402,10 +405,10 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_statistic_period_end_local": self._persisted.get(
                 "last_statistic_period_end_local"
             ),
-            "cumulative_meaning_pl": (
-                "Skumulowane kWh w integracji = ostatni punkt zapisu do recordera (import z API; "
-                "eksport × % odbioru). Wykres: karta Statystyka na pulpicie Lovelace + statistic_id "
-                "import/export. Narzędzia deweloperskie → Statystyki."
+            "cumulative_meaning": (
+                "Cumulative kWh in this integration equals the last recorder point "
+                "(import from API; export × recovery %). Chart with a Lovelace Statistics card "
+                "and statistic_id import/export. Developer Tools → Statistics."
             ),
         }
 
@@ -421,7 +424,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except EneaClientAuthError as err:
                 if attempt == 0:
                     _LOGGER.info(
-                        "eBOK 401 — ponowne logowanie (dzień %s): %s",
+                        "eBOK 401 — re-login (day %s): %s",
                         d.isoformat(),
                         err,
                     )
@@ -429,10 +432,10 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         login_final = await client.async_login(clear_cookies=True)
                         await client.async_prepare_meter_session(login_final)
                     except (EneaClientAuthError, EneaClientConfigError) as login_err:
-                        _LOGGER.warning("Dzień %s: %s", d.isoformat(), login_err)
+                        _LOGGER.warning("Day %s: %s", d.isoformat(), login_err)
                         return None
                 else:
-                    _LOGGER.warning("Dzień %s: %s", d.isoformat(), err)
+                    _LOGGER.warning("Day %s: %s", d.isoformat(), err)
                     return None
             except (
                 TimeoutError,
@@ -440,7 +443,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 RuntimeError,
                 EneaBalancingParseError,
             ) as err:
-                _LOGGER.warning("Dzień %s: %s", d.isoformat(), err)
+                _LOGGER.warning("Day %s: %s", d.isoformat(), err)
                 return None
         return None
 
@@ -465,7 +468,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return cum_imp, cum_exp
 
     async def _async_refresh_last_day_hourly_statistics(self, day: date) -> None:
-        """Gdy brak nowych dni — ponownie pobierz ostatnią zsynchronizowaną dobę i nadpisz punkty godzinowe."""
+        """When no new days are queued, re-fetch the last synced day and overwrite hourly points."""
         last_total_imp = float(
             self._persisted.get(
                 "last_day_import_total",
@@ -496,14 +499,14 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 login_final = await client.async_login()
                 await client.async_prepare_meter_session(login_final)
             except (EneaClientConfigError, EneaClientAuthError) as err:
-                _LOGGER.warning("Odświeżenie statystyk (dzień %s): %s", day.isoformat(), err)
+                _LOGGER.warning("Statistics refresh (day %s): %s", day.isoformat(), err)
                 return
             row = await self._async_fetch_row(client, day)
             if row is None or _row_lacks_published_data(row, self._today_local()):
                 return
 
         _LOGGER.info(
-            "Enea: odświeżanie godzin dla ostatniej doby %s (24 segmentów z API)",
+            "Enea: refreshing hourly data for last day %s (24 API segments)",
             day.isoformat(),
         )
         points_imp: list[tuple[datetime, float]] = []
@@ -522,7 +525,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store_last_day_totals(row)
         await self._async_save_store()
         _LOGGER.info(
-            "Enea: zapisano %s punktów godzinowych (skumulowane import/export do %.3f / %.3f kWh)",
+            "Enea: wrote %s hourly points (cumulative import/export %.3f / %.3f kWh)",
             len(points_imp),
             points_imp[-1][1],
             points_exp[-1][1],
@@ -547,17 +550,17 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             start = self._start_date
 
         _LOGGER.info(
-            "Enea: plan synchronizacji — data początku (config)=%s, pierwszy dzień do pobrania=%s, "
-            "ostatni dzień w kolejce=%s, ostatnio zsynchronizowano=%s",
+            "Enea: sync plan — configured start=%s, first fetch day=%s, "
+            "queue end=%s, last synced=%s",
             self._start_date.isoformat(),
             start.isoformat(),
             sync_through.isoformat(),
-            last_synced.isoformat() if last_synced else "(brak)",
+            last_synced.isoformat() if last_synced else "(none)",
         )
 
         if last_synced is not None and start > sync_through:
             _LOGGER.info(
-                "Enea: brak nowych dni w kolejce — tylko odświeżenie ostatniej doby %s",
+                "Enea: no new days in queue — refreshing last day %s only",
                 last_synced.isoformat(),
             )
             if self._point_of_delivery_id:
@@ -566,14 +569,14 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not self._point_of_delivery_id:
             raise UpdateFailed(
-                "Brak identyfikatora punktu poboru (pointOfDeliveryId). "
-                "Uzupełnij w konfiguracji integracji."
+                "Missing point of delivery ID (pointOfDeliveryId). "
+                "Configure it in the integration settings."
             )
 
         day_list = list(_daterange_inclusive(start, sync_through))
         total_days = len(day_list)
         _LOGGER.info(
-            "Enea: backfill — %s dni do pobrania (od %s do %s włącznie)",
+            "Enea: backfill — %s days to fetch (from %s through %s inclusive)",
             total_days,
             start.isoformat(),
             sync_through.isoformat(),
@@ -606,8 +609,8 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             for idx, d in enumerate(day_list, start=1):
                 _LOGGER.info(
-                    "Enea eBOK: pobieranie bilansu za dzień %s — %s/%s w tej serii "
-                    "(zakres %s → %s)",
+                    "Enea eBOK: fetching balancing for %s — %s/%s in this batch "
+                    "(range %s → %s)",
                     d.isoformat(),
                     idx,
                     total_days,
@@ -617,13 +620,13 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 row = await self._async_fetch_row(client, d)
                 if row is None:
                     _LOGGER.info(
-                        "Enea: błąd pobierania za dzień %s — kończę serię (kolejne dni pomijam)",
+                        "Enea: fetch failed for %s — stopping batch (skipping remaining days)",
                         d.isoformat(),
                     )
                     break
                 if _row_lacks_published_data(row, self._today_local()):
                     _LOGGER.info(
-                        "Enea: eBOK nie opublikował jeszcze doby %s — kończę serię",
+                        "Enea: eBOK has not published day %s yet — stopping batch",
                         d.isoformat(),
                     )
                     break
@@ -637,8 +640,8 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if points_imp:
                 _LOGGER.info(
-                    "Enea: zapis do recordera — %s punktów godzinowych (skumulowane kWh), "
-                    "ostatni dzień w serii: %s",
+                    "Enea: writing to recorder — %s hourly points (cumulative kWh), "
+                    "last day in batch: %s",
                     len(points_imp),
                     last_ok.isoformat() if last_ok else "?",
                 )

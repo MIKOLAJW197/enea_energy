@@ -1,4 +1,4 @@
-"""Integracja Enea Energy dla Home Assistant."""
+"""Enea Energy integration for Home Assistant."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ _LEGACY_DATA_LAG_DAYS = "data_lag_days"
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migracje wpisu konfiguracyjnego."""
+    """Migrate config entry data across schema versions."""
     data = dict(entry.data)
     version = entry.version
 

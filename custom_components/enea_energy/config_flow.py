@@ -1,4 +1,4 @@
-"""Konfiguracja integracji (UI)."""
+"""Config flow for the Enea Energy integration."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _normalize_start_date(value: Any, *, default: str | None = None) -> str:
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
-    """Walidacja pól konfiguracji."""
+    """Validate config flow input."""
     try:
         _normalize_start_date(data[CONF_START_DATE])
     except InvalidDate:
@@ -64,11 +64,11 @@ def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
 
 
 class InvalidDate(HomeAssistantError):
-    """Niepoprawna data startu backfillu."""
+    """Invalid history start date."""
 
 
 class InvalidPod(HomeAssistantError):
-    """Brak identyfikatora punktu poboru."""
+    """Missing point of delivery identifier."""
 
 
 def _normalize_export_recovery_percent(value: Any) -> int:
@@ -117,7 +117,7 @@ def _build_data_schema(defaults: dict[str, Any]) -> vol.Schema:
 
 
 class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Konfiguracja i ponowna konfiguracja integracji."""
+    """Handle config and reconfigure flows."""
 
     VERSION = 4
 
@@ -137,7 +137,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"Enea ({user_input[CONF_USERNAME]})",
+                    title=f"Enea Energy ({user_input[CONF_USERNAME]})",
                     data=user_input,
                 )
 
@@ -160,7 +160,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Zmiana danych istniejącego wpisu (m.in. punkt poboru)."""
+        """Reconfigure an existing entry (credentials, point of delivery, etc.)."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
 
