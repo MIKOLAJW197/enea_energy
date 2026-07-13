@@ -1,13 +1,13 @@
 {
   "domain": "enea_energy",
   "name": "Enea Energy",
-  "codeowners": [],
+  "codeowners": ["@MIKOLAJW197"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://github.com/",
+  "documentation": "https://github.com/MIKOLAJW197/enea_energy",
   "integration_type": "device",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/",
+  "issue_tracker": "https://github.com/MIKOLAJW197/enea_energy/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "1.0.0"
 }

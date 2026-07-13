@@ -1,4 +1,4 @@
-"""Sensory integracji Enea Energy."""
+"""Sensors for the Enea Energy integration."""
 
 from __future__ import annotations
 
@@ -23,13 +23,13 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Konfiguracja sensorów."""
+    """Set up sensors for a config entry."""
     coordinator: EneaEnergyCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     async_add_entities([EneaEnergyBalanceSensor(coordinator)])
 
 
 class EneaEnergyBalanceSensor(CoordinatorEntity[EneaEnergyCoordinator], SensorEntity):
-    """Bilans energii: oddanie (× % odbioru) minus pobór z sieci."""
+    """Energy balance for the billing period: adjusted export minus grid import."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "energy_balance"
@@ -60,4 +60,6 @@ class EneaEnergyBalanceSensor(CoordinatorEntity[EneaEnergyCoordinator], SensorEn
             "configured_start_date": data.get("configured_start_date"),
             "export_recovery_percent": data.get("export_recovery_percent"),
             "last_data_date": data.get("last_data_date"),
+            "statistic_id_import": data.get("statistic_id_import"),
+            "statistic_id_export": data.get("statistic_id_export"),
         }

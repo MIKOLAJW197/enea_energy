@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Enea Energy",
+        "description": "You need two UUIDs: `pointOfDeliveryId` from the POST body of `summaryBalancingChart`; if your account has multiple contracts, also `current_client_id` from `…/dashboard/select-current-client/<UUID>` after selecting the right contract. Hourly data is stored as external recorder statistics — use a Lovelace Statistics card with the statistic ID (integration log / Developer Tools → Statistics).",
+        "data": {
+          "username": "E-mail (eBOK)",
+          "password": "Password",
+          "point_of_delivery_id": "Point of delivery — pointOfDeliveryId",
+          "current_client_id": "Optional: client ID from select-current-client/… URL (multiple contracts)",
+          "start_date": "History start date",
+          "export_recovery_percent": "Export recovery rate (prosumer)"
+        }
+      },
+      "reconfigure": {
+        "title": "Enea Energy",
+        "description": "Update settings. Leave password empty to keep the current one.",
+        "data": {
+          "username": "E-mail (eBOK)",
+          "password": "Password (empty = unchanged)",
+          "point_of_delivery_id": "Point of delivery (pointOfDeliveryId)",
+          "current_client_id": "Optional: UUID from …/select-current-client/…",
+          "start_date": "History start date",
+          "export_recovery_percent": "Export recovery rate (prosumer)"
+        }
+      }
+    },
+    "error": {
+      "invalid_start_date": "Invalid history start date.",
+      "invalid_point_of_delivery": "Enter the point of delivery ID (UUID from DevTools → Network)."
+    },
+    "abort": {
+      "reconfigure_successful": "Settings saved. The integration was reloaded."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_balance": {
+        "name": "Energy balance"
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-"""Parsowanie odpowiedzi JSON z /meter/summaryBalancingChart (endpoint nie zwraca CSV)."""
+"""Parse JSON responses from /meter/summaryBalancingChart (endpoint does not return CSV)."""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ from .models import DailyEnergyRow
 
 _LOGGER = logging.getLogger(__name__)
 
-# eBOK summaryBalancingChart
-KEY_ENERGY_IMPORT_CASB = "aecasb"  # pobór po zbilansowaniu [kWh] (dobowo lub w wierszu godzinowym)
-KEY_ENERGY_EXPORT_CASB = "eaecasb"  # oddanie po zbilansowaniu [kWh]
-KEY_ENERGY_IMPORT_RAW = "aec"  # pobór „surowy” w wierszu godzinowym
-KEY_ENERGY_EXPORT_RAW = "eaec"  # oddanie „surowe” w wierszu godzinowym
+# eBOK summaryBalancingChart field names
+KEY_ENERGY_IMPORT_CASB = "aecasb"  # balanced import [kWh] (daily or hourly row)
+KEY_ENERGY_EXPORT_CASB = "eaecasb"  # balanced export [kWh]
+KEY_ENERGY_IMPORT_RAW = "aec"  # raw import in hourly row
+KEY_ENERGY_EXPORT_RAW = "eaec"  # raw export in hourly row
 
 
 class EneaBalancingParseError(ValueError):
-    """Nie udało się odczytać poboru/oddania z JSON."""
+    """Failed to read import/export values from JSON."""
 
 
-# Etykiety serii (małe litery) — dopasowanie substringów
+# Series labels (lowercase) — substring match
 _IMPORT_LABEL_PARTS = (
     "pobór",
     "pobor",
@@ -123,7 +123,7 @@ def _add_series_aligned(a: list[float] | None, b: list[float]) -> list[float]:
 
 
 def _hourly_from_datasets(datasets: Any) -> tuple[list[float], list[float]]:
-    """Łączy serie z datasets: pierwszy import + pierwszy eksport (suma wyrównana do max długości)."""
+    """Merge datasets: first import + first export series (aligned to max length)."""
     if not isinstance(datasets, list):
         return [], []
     imp_acc: list[float] | None = None
@@ -149,7 +149,7 @@ def _hourly_score(imp: list[float], exp: list[float]) -> int:
 
 
 def _best_hourly_series(root: Any) -> tuple[list[float], list[float]]:
-    """Wybiera najbogatszy blok datasets w drzewie JSON (najwięcej punktów godzinowych)."""
+    """Pick the richest datasets block in the JSON tree (most hourly points)."""
     best_imp: list[float] = []
     best_exp: list[float] = []
     best_score = 0
@@ -216,7 +216,7 @@ def _walk_for_datasets(obj: Any, depth: int = 0) -> tuple[float | None, float | 
 
 
 def _coerce_energy_value(val: Any) -> float | None:
-    """Liczba lub lista liczb (np. serie godzinowe) → suma kWh."""
+    """Number or list of numbers (e.g. hourly series) → sum in kWh."""
     if _is_number(val):
         return _to_float(val)
     if isinstance(val, list):
@@ -226,7 +226,7 @@ def _coerce_energy_value(val: Any) -> float | None:
 
 
 def _deep_find_casb_fields(obj: Any) -> tuple[float | None, float | None]:
-    """Przeszukuje drzewo JSON pod kątem aecasb / eaecasb (ostatnia napotkana wartość wygrywa)."""
+    """Walk JSON tree for aecasb / eaecasb (last encountered value wins)."""
     imp: float | None = None
     exp: float | None = None
 
@@ -252,7 +252,7 @@ def _deep_find_casb_fields(obj: Any) -> tuple[float | None, float | None]:
 
 
 def _row_energy_kwh(row: Mapping[str, Any]) -> tuple[float, float]:
-    """Wartości z jednego wiersza godzinowego: (pobór, oddanie), preferowane pola *casb."""
+    """Values from one hourly row: (import, export), prefer *casb fields."""
     imp = 0.0
     exp = 0.0
     if _is_number(row.get(KEY_ENERGY_IMPORT_CASB)):
@@ -267,7 +267,7 @@ def _row_energy_kwh(row: Mapping[str, Any]) -> tuple[float, float]:
 
 
 def _parse_hourly_row_array(root: list[Any], day: date) -> DailyEnergyRow | None:
-    """Odpowiedź jako tablica wierszy: [{ dateFrom, dateTo, aecasb, eaecasb, ... }, ...]."""
+    """Response as row array: [{ dateFrom, dateTo, aecasb, eaecasb, ... }, ...]."""
     rows = [r for r in root if isinstance(r, dict)]
     if not rows:
         return None
@@ -305,7 +305,7 @@ def _parse_hourly_row_array(root: list[Any], day: date) -> DailyEnergyRow | None
 
 
 def _flat_energy_keys(obj: Mapping[str, Any]) -> tuple[float | None, float | None]:
-    """Szuka płaskich kluczy typu importKwh / energyImported."""
+    """Look for flat keys such as importKwh / energyImported."""
     lower_map = {str(k).lower(): v for k, v in obj.items()}
     imp = None
     exp = None
@@ -334,24 +334,24 @@ def _flat_energy_keys(obj: Mapping[str, Any]) -> tuple[float | None, float | Non
 
 
 def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
-    """Parsuje odpowiedź XHR: dobowe kWh (aecasb/eaecasb lub suma serii) oraz serie godzinowe."""
+    """Parse XHR response: daily kWh (aecasb/eaecasb or series sum) and hourly series."""
     text = text.strip()
     if not text:
-        raise EneaBalancingParseError("Pusta odpowiedź z API bilansu")
+        raise EneaBalancingParseError("Empty balancing API response")
     if text.startswith("<!") or text.startswith("<html"):
         raise EneaBalancingParseError(
-            "Otrzymano HTML zamiast JSON — sesja mogła wygasnąć lub brak dostępu."
+            "Received HTML instead of JSON — session may have expired or access was denied."
         )
 
     try:
         root: Any = json.loads(text)
     except json.JSONDecodeError as err:
-        raise EneaBalancingParseError(f"Niepoprawny JSON: {err}") from err
+        raise EneaBalancingParseError(f"Invalid JSON: {err}") from err
 
     if isinstance(root, dict):
         if root.get("success") is False or root.get("error"):
             msg = root.get("message") or root.get("error") or root
-            raise EneaBalancingParseError(f"API zwróciło błąd: {msg!r}")
+            raise EneaBalancingParseError(f"API returned an error: {msg!r}")
 
     if isinstance(root, list):
         if not root:
@@ -371,7 +371,7 @@ def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
     hourly_imp_t = tuple(h_imp)
     hourly_exp_t = tuple(h_exp)
 
-    # Na liście wierszy _deep_find_casb_fields zwracałby tylko ostatni element — pomijamy
+    # On row lists _deep_find_casb_fields would only return the last element — skip
     casb_imp, casb_exp = (
         (None, None) if isinstance(root, list) else _deep_find_casb_fields(root)
     )
@@ -406,10 +406,10 @@ def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
 
     if imp is None and exp is None:
         _LOGGER.debug(
-            "Nie rozpoznano struktury JSON (pierwsze 800 znaków): %s", text[:800]
+            "Unrecognized JSON structure (first 800 chars): %s", text[:800]
         )
         raise EneaBalancingParseError(
-            "Nie znaleziono serii pobór/oddanie w JSON — wklej fragment odpowiedzi w zgłoszeniu."
+            "Could not find import/export series in JSON — attach a response snippet in your issue."
         )
 
     return DailyEnergyRow(
