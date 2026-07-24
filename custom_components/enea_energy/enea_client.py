@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from html.parser import HTMLParser
 import logging
 import re
 import time
 from datetime import date
+from html.parser import HTMLParser
 
 import aiohttp
-
 from yarl import URL
 
 from .const import (
@@ -163,8 +162,9 @@ def _extract_login_token(html: str) -> str:
     try:
         parser.feed(html)
         parser.close()
-    except Exception:  # pragma: no cover — parser should not fail on typical HTML
-        pass
+    except (ValueError, TypeError, AssertionError) as err:
+        # Malformed markup — fall through to regex fallbacks below.
+        _LOGGER.debug("eBOK login HTML parser failed (%s); trying regex", err)
     if parser.token:
         return parser.token
 
@@ -342,7 +342,7 @@ class EneaClient:
         ) as resp:
             html = await resp.text()
 
-        href_rx = re.compile(r"""href\s*=\s*["']([^"'#]+)["']""", re.I)
+        href_rx = re.compile(r"""href\s*=\s*["']([^"'#]+)["']""", re.IGNORECASE)
         seen: set[str] = set()
         to_visit: list[str] = []
         for m in href_rx.finditer(html):
@@ -366,7 +366,7 @@ class EneaClient:
         referer = ENEA_DASHBOARD_MANY_CLIENTS_URL
         to_visit.sort(
             key=lambda u: (
-                0 if re.search(r"/meter(/|$)", u, re.I) else 1,
+                0 if re.search(r"/meter(/|$)", u, re.IGNORECASE) else 1,
                 len(u),
             )
         )

@@ -338,7 +338,7 @@ def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
     text = text.strip()
     if not text:
         raise EneaBalancingParseError("Empty balancing API response")
-    if text.startswith("<!") or text.startswith("<html"):
+    if text.startswith(("<!", "<html")):
         raise EneaBalancingParseError(
             "Received HTML instead of JSON — session may have expired or access was denied."
         )
@@ -348,10 +348,11 @@ def parse_balancing_json(text: str, day: date) -> DailyEnergyRow:
     except json.JSONDecodeError as err:
         raise EneaBalancingParseError(f"Invalid JSON: {err}") from err
 
-    if isinstance(root, dict):
-        if root.get("success") is False or root.get("error"):
-            msg = root.get("message") or root.get("error") or root
-            raise EneaBalancingParseError(f"API returned an error: {msg!r}")
+    if isinstance(root, dict) and (
+        root.get("success") is False or root.get("error")
+    ):
+        msg = root.get("message") or root.get("error") or root
+        raise EneaBalancingParseError(f"API returned an error: {msg!r}")
 
     if isinstance(root, list):
         if not root:

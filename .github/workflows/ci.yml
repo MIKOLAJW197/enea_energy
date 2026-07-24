@@ -17,7 +17,8 @@ jobs:
           python-version: "3.13"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pin to keep CI stable across ruff major/minor releases.
+        run: pip install "ruff==0.16.0"
 
       - name: Ruff
         run: ruff check custom_components
