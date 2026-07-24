@@ -67,6 +67,19 @@ _TOKEN_REGEX_FALLBACKS = (
     ),
 )
 
+# eBOK sometimes replaces /logowanie with a maintenance / WAF block page (no login form).
+_EBOK_UNAVAILABLE_MARKERS = (
+    "strona zablokowana",
+    "prace serwisowe",
+    "prac serwisowych",
+    "aplikacja ebok jest niedostępna",
+    "aplikacja ebok jest niedostepna",
+)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_H3_RE = re.compile(r"<h3[^>]*>(.*?)</h3>", re.IGNORECASE | re.DOTALL)
+_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
 
 class _LoginTokenParser(HTMLParser):
     """Extract value from hidden input name=token (any attribute order)."""
@@ -97,7 +110,55 @@ class EneaClientAuthError(RuntimeError):
     """Login or session error."""
 
 
+class EneaClientUnavailableError(EneaClientAuthError):
+    """eBOK portal temporarily unavailable (maintenance / block page)."""
+
+
+def _strip_html_to_text(fragment: str) -> str:
+    text = _TAG_RE.sub(" ", fragment)
+    return " ".join(text.split()).strip()
+
+
+def _maintenance_message_from_html(html: str) -> str:
+    """Build a short human-readable summary from a maintenance/block page."""
+    parts: list[str] = []
+    title_m = _TITLE_RE.search(html)
+    if title_m:
+        title = _strip_html_to_text(title_m.group(1))
+        if title:
+            parts.append(title)
+    h3_m = _H3_RE.search(html)
+    if h3_m:
+        heading = _strip_html_to_text(h3_m.group(1))
+        if heading and heading not in parts:
+            parts.append(heading)
+    for p_m in _P_RE.finditer(html):
+        para = _strip_html_to_text(p_m.group(1))
+        if para and para not in parts:
+            parts.append(para)
+        if sum(len(p) for p in parts) > 400:
+            break
+    if parts:
+        return " ".join(parts)[:500]
+    return _strip_html_to_text(html[:1500])[:500]
+
+
+def _raise_if_ebok_unavailable(html: str) -> None:
+    """Raise when GET /logowanie returned a maintenance or block page instead of the form."""
+    lowered = html.casefold()
+    if not any(marker in lowered for marker in _EBOK_UNAVAILABLE_MARKERS):
+        return
+    details = _maintenance_message_from_html(html)
+    raise EneaClientUnavailableError(
+        "eBOK is temporarily unavailable (maintenance or blocked page) — "
+        "no login form/token was returned. "
+        f"Portal message: {details}"
+    )
+
+
 def _extract_login_token(html: str) -> str:
+    _raise_if_ebok_unavailable(html)
+
     parser = _LoginTokenParser()
     try:
         parser.feed(html)
@@ -116,7 +177,8 @@ def _extract_login_token(html: str) -> str:
     _LOGGER.debug("eBOK login: token not found, GET response snippet: %s", snippet)
     raise EneaClientAuthError(
         "Hidden token field not found on the login page. "
-        "Possible causes: eBOK form change, cookie consent block (Cookiebot), or unexpected response. "
+        "Possible causes: eBOK maintenance/block page, form change, cookie consent "
+        "block (Cookiebot), or unexpected response. "
         "Enable DEBUG logging for custom_components.enea_energy and inspect the HTML snippet."
     )
 
@@ -184,8 +246,20 @@ class EneaClient:
             "Cookie": _COOKIEBOT_HEADER,
         }
         async with self._session.get(page_url, headers=page_headers) as resp:
-            resp.raise_for_status()
             html = await resp.text()
+            status = resp.status
+            final_url = str(resp.url)
+
+        if status >= 400:
+            raise EneaClientAuthError(
+                f"Login page HTTP {status} ({final_url}): {html[:500]!r}"
+            )
+        if status != 200:
+            _LOGGER.warning(
+                "eBOK login GET returned HTTP %s (url=%s) — expecting 200 with login form",
+                status,
+                final_url,
+            )
 
         token = _extract_login_token(html)
         payload: dict[str, str] = {
