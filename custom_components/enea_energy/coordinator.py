@@ -401,7 +401,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_data_date": self._persisted.get("last_data_date"),
             "last_day_import_total_kwh": self._persisted.get("last_day_import_total"),
             "last_day_export_total_kwh": self._persisted.get("last_day_export_total"),
-            "export_recovery_percent": int(round(self._export_recovery_ratio * 100)),
+            "export_recovery_percent": round(self._export_recovery_ratio * 100),
             "last_statistic_period_end_local": self._persisted.get(
                 "last_statistic_period_end_local"
             ),
@@ -546,8 +546,7 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_save_store()
 
         start = self._start_date if last_synced is None else last_synced + timedelta(days=1)
-        if start < self._start_date:
-            start = self._start_date
+        start = max(start, self._start_date)
 
         _LOGGER.info(
             "Enea: sync plan — configured start=%s, first fetch day=%s, "

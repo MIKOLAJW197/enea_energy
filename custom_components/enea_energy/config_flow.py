@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
@@ -25,7 +24,9 @@ from .const import (
     EXPORT_RECOVERY_PERCENT_OPTIONS,
 )
 
-DEFAULT_BACKFILL_START = (date.today() - timedelta(days=730)).isoformat()
+DEFAULT_BACKFILL_START = (
+    datetime.now(UTC).date() - timedelta(days=730)
+).isoformat()
 
 
 def _parse_iso_date(value: str) -> date:
@@ -49,10 +50,7 @@ def _normalize_start_date(value: Any, *, default: str | None = None) -> str:
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Validate config flow input."""
-    try:
-        _normalize_start_date(data[CONF_START_DATE])
-    except InvalidDate:
-        raise
+    _normalize_start_date(data[CONF_START_DATE])
     if not str(data.get(CONF_POINT_OF_DELIVERY_ID, "")).strip():
         raise InvalidPod
 
