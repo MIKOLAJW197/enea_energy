@@ -3,35 +3,46 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "Dwa UUID: pointOfDeliveryId z POST summaryBalancingChart; przy wielu klientach na koncie dodatkowo current_client_id z adresu …/dashboard/select-current-client/<UUID> po kliknięciu właściwej umowy. Dane godzinowe zapisują się jako zewnętrzne statystyki recordera — na pulpicie Lovelace użyj karty Statystyka i wpisz statistic_id (log integracji / Narzędzia deweloperskie → Statystyki).",
+        "description": "Od ~10.2026 eBOK loguje przez moja.enea.pl (reCAPTCHA / SMS). Zaloguj się w przeglądarce, potem w DevTools → Application → Cookies skopiuj EBOK_SESSION z ebok.enea.pl oraz (zalecane) PHPSESSID z moja.enea.pl. Nie wylogowuj się. pointOfDeliveryId można zostawić puste — wykryje się z sesji; przy wielu umowach podaj current_client_id z …/select-current-client/<UUID>.",
         "data": {
-          "username": "Adres e-mail (eBOK)",
-          "password": "Hasło",
-          "point_of_delivery_id": "Punkt poboru — pointOfDeliveryId (POST do summaryBalancingChart)",
-          "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/… (wiele umów)",
+          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
+          "sso_cookie": "PHPSESSID (moja.enea.pl) — zalecane",
+          "point_of_delivery_id": "Punkt poboru — pointOfDeliveryId (opcjonalnie)",
+          "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/…",
           "start_date": "Data początku historii",
           "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
         }
       },
       "reconfigure": {
         "title": "Enea Energy",
-        "description": "Zmiana ustawień. Hasło: zostaw puste, żeby nie zmieniać.",
+        "description": "Zmiana ustawień. Puste pola cookie = zostaw aktualną sesję.",
         "data": {
-          "username": "Adres e-mail (eBOK)",
-          "password": "Hasło (puste = bez zmiany)",
+          "ebok_cookie": "EBOK_SESSION (puste = bez zmiany)",
+          "sso_cookie": "PHPSESSID (puste = bez zmiany)",
           "point_of_delivery_id": "Punkt poboru (pointOfDeliveryId)",
           "current_client_id": "Opcjonalnie: UUID z …/select-current-client/…",
           "start_date": "Data początku historii",
           "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Ponowne logowanie Enea Energy",
+        "description": "Sesja eBOK wygasła dla „{title}”. Zaloguj się w przeglądarce i wklej świeże cookie.",
+        "data": {
+          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
+          "sso_cookie": "PHPSESSID (moja.enea.pl) — zalecane"
+        }
       }
     },
     "error": {
       "invalid_start_date": "Niepoprawna data początku historii.",
-      "invalid_point_of_delivery": "Podaj identyfikator punktu poboru (UUID z DevTools → Network)."
+      "invalid_point_of_delivery": "Nie udało się ustalić punktu poboru — podaj UUID z DevTools → Network.",
+      "invalid_session": "Sesja odrzucona. Zaloguj się w przeglądarce i wklej świeże EBOK_SESSION / PHPSESSID.",
+      "cannot_connect": "Nie udało się połączyć z eBOK / Moja Enea."
     },
     "abort": {
-      "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana."
+      "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana.",
+      "reauth_successful": "Sesja odświeżona. Integracja została przeładowana."
     }
   },
   "entity": {

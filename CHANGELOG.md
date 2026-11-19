@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-19
+
+### Breaking
+
+- Password login removed: eBOK now authenticates via Moja Enea OIDC (`moja.enea.pl`) with reCAPTCHA and optional SMS/e-mail 2FA. Configure with browser session cookies (`EBOK_SESSION`, recommended `PHPSESSID`) instead.
+- Existing entries without cookies will ask for re-authentication on setup.
+
+### Added
+
+- Session keepalive (every 10 minutes) and cookie rotation persistence
+- Silent SSO renewal via moja.enea.pl session when `EBOK_SESSION` expires
+- Reauth config flow for expired sessions
+- Optional auto-discovery of `pointOfDeliveryId` from the signed-in meter page
+
+### Changed
+
+- Config entry schema version 5
+- Local smoke test (`scripts/smoke_ebok.py`) uses cookies from `.local/dev_config.json`
+
 ## [1.0.2] - 2026-07-24
 
 ### Fixed
@@ -30,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Sync cursor no longer advances past unpublished eBOK days without energy data
 
+[1.1.0]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.1.0
 [1.0.2]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.2
 [1.0.1]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.1
 [1.0.0]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.0

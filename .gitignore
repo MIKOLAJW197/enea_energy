@@ -2,3 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 .DS_Store
+
+# Local credentials / smoke-test dumps (never commit)
+.local/*
+!.local/dev_config.example.json
+*.local.json
+.local_dev_config.json

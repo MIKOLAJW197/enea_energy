@@ -52,7 +52,7 @@ _EXPORT_LABEL_PARTS = (
 def _is_number(v: Any) -> bool:
     if isinstance(v, bool):
         return False
-    if isinstance(v, int | float):
+    if isinstance(v, (int, float)):
         return True
     if isinstance(v, str):
         try:
@@ -64,7 +64,7 @@ def _is_number(v: Any) -> bool:
 
 
 def _to_float(v: Any) -> float:
-    if isinstance(v, int | float):
+    if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):
         return float(v.replace(",", ".").replace(" ", ""))

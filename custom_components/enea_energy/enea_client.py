@@ -1,104 +1,58 @@
-"""HTTP client for Enea eBOK login and data download."""
+"""HTTP client for Enea eBOK session + balancing download.
+
+Since ~2026-10 eBOK signs in through OpenID Connect at moja.enea.pl. The password
+form is protected by reCAPTCHA Enterprise and optionally an SMS / e-mail 2FA code,
+so this client never submits credentials. The user signs in in a normal browser and
+hands over session cookies (`EBOK_SESSION`, optionally moja.enea.pl `PHPSESSID`).
+
+The client then:
+- keeps the eBOK session alive with a light periodic request,
+- when the eBOK session is gone, follows the normal OIDC redirect with the Moja
+  Enea session (silent single sign-on — no form, no CAPTCHA),
+- otherwise raises ``EneaClientAuthError`` so Home Assistant can ask for a new
+  browser sign-in.
+
+Hourly meter data is still ``POST /meter/summaryBalancingChart`` → JSON.
+"""
 
 from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import date
-from html.parser import HTMLParser
 
 import aiohttp
 from yarl import URL
 
 from .const import (
+    EBOK_COOKIE_NAME,
+    ENEA_BASE_URL,
     ENEA_COOKIEBOT_CONSENT_VALUE,
     ENEA_DASHBOARD_MANY_CLIENTS_URL,
-    ENEA_FORM_PASSWORD_FIELD,
-    ENEA_FORM_TOKEN_FIELD,
-    ENEA_FORM_USER_FIELD,
-    ENEA_LOGIN_EXTRA_FIELDS,
     ENEA_LOGIN_PAGE_URL,
-    ENEA_LOGIN_SUBMIT_URL,
     ENEA_METER_SUMMARY_REFERER,
     ENEA_METER_SUMMARY_URL,
     ENEA_SELECT_CURRENT_CLIENT_BASE,
+    ENEA_SSO_URL,
+    SSO_COOKIE_NAME,
+    USER_AGENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 _BROWSERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENT,
     "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
 }
-
-_COOKIEBOT_HEADER = f"CookieConsent={ENEA_COOKIEBOT_CONSENT_VALUE}"
 
 _METER_HEADERS = {
     **_BROWSERS,
     "Accept": "*/*",
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "XMLHttpRequest",
-    "Origin": "https://ebok.enea.pl",
+    "Origin": ENEA_BASE_URL,
     "Referer": ENEA_METER_SUMMARY_REFERER,
 }
-
-# Fallback patterns when the HTML parser fails (e.g. malformed markup)
-_TOKEN_REGEX_FALLBACKS = (
-    re.compile(
-        r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']token["\'][^>]*value=["\']([^"\']*)["\']',
-        re.IGNORECASE | re.DOTALL,
-    ),
-    re.compile(
-        r'<input[^>]*name=["\']token["\'][^>]*value=["\']([^"\']*)["\']',
-        re.IGNORECASE | re.DOTALL,
-    ),
-    re.compile(
-        r'<input[^>]*value=["\']([^"\']+)["\'][^>]*name=["\']token["\']',
-        re.IGNORECASE | re.DOTALL,
-    ),
-    re.compile(
-        r'name=["\']token["\'][^>]*value=["\']([^"\']*)["\']',
-        re.IGNORECASE | re.DOTALL,
-    ),
-)
-
-# eBOK sometimes replaces /logowanie with a maintenance / WAF block page (no login form).
-_EBOK_UNAVAILABLE_MARKERS = (
-    "strona zablokowana",
-    "prace serwisowe",
-    "prac serwisowych",
-    "aplikacja ebok jest niedostępna",
-    "aplikacja ebok jest niedostepna",
-)
-_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-_H3_RE = re.compile(r"<h3[^>]*>(.*?)</h3>", re.IGNORECASE | re.DOTALL)
-_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.IGNORECASE | re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-class _LoginTokenParser(HTMLParser):
-    """Extract value from hidden input name=token (any attribute order)."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.token: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if self.token is not None or tag.lower() != "input":
-            return
-        ad = {str(k).lower(): (v if v is not None else "") for k, v in attrs}
-        if ad.get("name", "").lower() != ENEA_FORM_TOKEN_FIELD.lower():
-            return
-        typ = (ad.get("type") or "").lower()
-        if typ not in ("hidden", ""):
-            return
-        val = (ad.get("value") or "").strip()
-        if val:
-            self.token = val
 
 
 class EneaClientConfigError(RuntimeError):
@@ -106,81 +60,32 @@ class EneaClientConfigError(RuntimeError):
 
 
 class EneaClientAuthError(RuntimeError):
-    """Login or session error."""
+    """Session gone and could not be renewed — user must sign in again in a browser."""
 
 
 class EneaClientUnavailableError(EneaClientAuthError):
-    """eBOK portal temporarily unavailable (maintenance / block page)."""
+    """eBOK portal temporarily unavailable."""
 
 
-def _strip_html_to_text(fragment: str) -> str:
-    text = _TAG_RE.sub(" ", fragment)
-    return " ".join(text.split()).strip()
+def parse_cookies(raw: str | None, default_name: str) -> dict[str, str]:
+    """Accept a bare cookie value, ``name=value``, or a whole ``Cookie:`` header."""
+    raw = (raw or "").strip()
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+    if not raw:
+        return {}
+    if "=" not in raw:
+        return {default_name: raw}
+    cookies: dict[str, str] = {}
+    for part in raw.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name:
+            cookies[name.strip()] = value.strip()
+    return cookies
 
 
-def _maintenance_message_from_html(html: str) -> str:
-    """Build a short human-readable summary from a maintenance/block page."""
-    parts: list[str] = []
-    title_m = _TITLE_RE.search(html)
-    if title_m:
-        title = _strip_html_to_text(title_m.group(1))
-        if title:
-            parts.append(title)
-    h3_m = _H3_RE.search(html)
-    if h3_m:
-        heading = _strip_html_to_text(h3_m.group(1))
-        if heading and heading not in parts:
-            parts.append(heading)
-    for p_m in _P_RE.finditer(html):
-        para = _strip_html_to_text(p_m.group(1))
-        if para and para not in parts:
-            parts.append(para)
-        if sum(len(p) for p in parts) > 400:
-            break
-    if parts:
-        return " ".join(parts)[:500]
-    return _strip_html_to_text(html[:1500])[:500]
-
-
-def _raise_if_ebok_unavailable(html: str) -> None:
-    """Raise when GET /logowanie returned a maintenance or block page instead of the form."""
-    lowered = html.casefold()
-    if not any(marker in lowered for marker in _EBOK_UNAVAILABLE_MARKERS):
-        return
-    details = _maintenance_message_from_html(html)
-    raise EneaClientUnavailableError(
-        "eBOK is temporarily unavailable (maintenance or blocked page) — "
-        "no login form/token was returned. "
-        f"Portal message: {details}"
-    )
-
-
-def _extract_login_token(html: str) -> str:
-    _raise_if_ebok_unavailable(html)
-
-    parser = _LoginTokenParser()
-    try:
-        parser.feed(html)
-        parser.close()
-    except (ValueError, TypeError, AssertionError) as err:
-        # Malformed markup — fall through to regex fallbacks below.
-        _LOGGER.debug("eBOK login HTML parser failed (%s); trying regex", err)
-    if parser.token:
-        return parser.token
-
-    for rx in _TOKEN_REGEX_FALLBACKS:
-        m = rx.search(html)
-        if m and m.group(1).strip():
-            return m.group(1).strip()
-
-    snippet = " ".join(html[:2000].split())
-    _LOGGER.debug("eBOK login: token not found, GET response snippet: %s", snippet)
-    raise EneaClientAuthError(
-        "Hidden token field not found on the login page. "
-        "Possible causes: eBOK maintenance/block page, form change, cookie consent "
-        "block (Cookiebot), or unexpected response. "
-        "Enable DEBUG logging for custom_components.enea_energy and inspect the HTML snippet."
-    )
+def format_cookies(cookies: dict[str, str]) -> str:
+    return "; ".join(f"{name}={value}" for name, value in cookies.items())
 
 
 def _format_date_pl(day: date) -> str:
@@ -188,155 +93,210 @@ def _format_date_pl(day: date) -> str:
 
 
 class EneaClient:
-    """Session: GET login page (token), POST credentials, POST summaryBalancingChart."""
+    """Browser-session client: cookies in → balancing JSON out."""
 
     def __init__(
         self,
-        session: aiohttp.ClientSession,
-        username: str,
-        password: str,
-        point_of_delivery_id: str,
+        ebok_cookie: str | None,
+        sso_cookie: str | None = None,
+        point_of_delivery_id: str = "",
         current_client_id: str = "",
+        *,
+        session: aiohttp.ClientSession | None = None,
     ) -> None:
-        self._session = session
-        self._username = username
-        self._password = password
+        self._ebok_cookies = parse_cookies(ebok_cookie, EBOK_COOKIE_NAME)
+        self._sso_cookies = parse_cookies(sso_cookie, SSO_COOKIE_NAME)
         self._point_of_delivery_id = (point_of_delivery_id or "").strip()
         self._current_client_id = (current_client_id or "").strip()
+        self._session = session
+        self._owns_session = session is None
+        self._ready = False
 
-    def _require_login_urls(self) -> None:
-        if not ENEA_LOGIN_SUBMIT_URL:
-            raise EneaClientConfigError(
-                "Set ENEA_LOGIN_SUBMIT_URL in const.py."
+    @property
+    def point_of_delivery_id(self) -> str:
+        return self._point_of_delivery_id
+
+    def _ensure_http(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            jar = aiohttp.CookieJar()
+            ebok = URL(ENEA_BASE_URL)
+            sso = URL(ENEA_SSO_URL)
+            jar.update_cookies(
+                {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
+                response_url=ebok,
             )
+            if self._ebok_cookies:
+                jar.update_cookies(self._ebok_cookies, response_url=ebok)
+            if self._sso_cookies:
+                jar.update_cookies(self._sso_cookies, response_url=sso)
+            self._session = aiohttp.ClientSession(
+                headers={"User-Agent": USER_AGENT},
+                cookie_jar=jar,
+                timeout=aiohttp.ClientTimeout(total=60),
+            )
+            self._owns_session = True
+        return self._session
+
+    async def close(self) -> None:
+        if self._owns_session and self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
+        self._ready = False
+
+    def export_cookies(self) -> tuple[str, str]:
+        """Current (possibly rotated) cookies — persist on the config entry."""
+        if self._session is None:
+            return format_cookies(self._ebok_cookies), format_cookies(self._sso_cookies)
+        jar = self._session.cookie_jar
+        ebok = {
+            k: m.value
+            for k, m in jar.filter_cookies(URL(ENEA_BASE_URL)).items()
+            if k == EBOK_COOKIE_NAME
+        } or self._ebok_cookies
+        sso = {
+            k: m.value
+            for k, m in jar.filter_cookies(URL(ENEA_SSO_URL)).items()
+            if not k.startswith("TS")
+        } or self._sso_cookies
+        self._ebok_cookies = ebok
+        self._sso_cookies = sso
+        return format_cookies(ebok), format_cookies(sso)
+
+    @staticmethod
+    def _bounced_to_login(url: URL) -> bool:
+        host = (url.host or "").lower()
+        path = url.path or ""
+        if host and host != URL(ENEA_BASE_URL).host:
+            return True
+        if "signin-oidc" in path or "/logowanie" in path.lower():
+            return True
+        if "moja.enea.pl" in host:
+            return True
+        return False
 
     def _require_meter_target(self) -> None:
         if not self._point_of_delivery_id:
             raise EneaClientConfigError(
                 "Missing point of delivery ID — configure it in the integration settings."
             )
-        if not ENEA_METER_SUMMARY_URL:
-            raise EneaClientConfigError("Missing ENEA_METER_SUMMARY_URL in const.py.")
 
-    async def async_login(self, *, clear_cookies: bool = False) -> str:
-        """GET login page (cookies + token), then POST eBOK credentials.
-
-        ``clear_cookies=True`` clears the jar (e.g. after 401); otherwise the server
-        may return a post-login template without the ``token`` field.
-        """
-        self._require_login_urls()
-        assert ENEA_LOGIN_SUBMIT_URL is not None
-
-        ebok_url = URL("https://ebok.enea.pl")
-        if clear_cookies:
-            self._session.cookie_jar.clear()
-        self._session.cookie_jar.update_cookies(
-            {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
-            response_url=ebok_url,
-        )
-
-        page_url = ENEA_LOGIN_PAGE_URL or ENEA_LOGIN_SUBMIT_URL
-        if clear_cookies:
-            sep = "&" if "?" in page_url else "?"
-            page_url = f"{page_url}{sep}_nc={int(time.time() * 1000)}"
-
-        page_headers = {
-            **_BROWSERS,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Cookie": _COOKIEBOT_HEADER,
-        }
-        async with self._session.get(page_url, headers=page_headers) as resp:
-            html = await resp.text()
-            status = resp.status
-            final_url = str(resp.url)
-
-        if status >= 400:
-            raise EneaClientAuthError(
-                f"Login page HTTP {status} ({final_url}): {html[:500]!r}"
-            )
-        if status != 200:
-            _LOGGER.warning(
-                "eBOK login GET returned HTTP %s (url=%s) — expecting 200 with login form",
-                status,
-                final_url,
-            )
-
-        token = _extract_login_token(html)
-        payload: dict[str, str] = {
-            ENEA_FORM_USER_FIELD: self._username,
-            ENEA_FORM_PASSWORD_FIELD: self._password,
-            ENEA_FORM_TOKEN_FIELD: token,
-            "btnSubmit": "",
-        }
-        if ENEA_LOGIN_EXTRA_FIELDS:
-            payload.update(ENEA_LOGIN_EXTRA_FIELDS)
-
-        post_headers = {
-            **_BROWSERS,
-            "Referer": page_url,
-            "Origin": "https://ebok.enea.pl",
-            "Cookie": _COOKIEBOT_HEADER,
-        }
-        async with self._session.post(
-            ENEA_LOGIN_SUBMIT_URL,
-            data=payload,
-            headers=post_headers,
+    async def async_ensure_session(self) -> None:
+        """Validate the handed-over session; renew via silent SSO when possible."""
+        session = self._ensure_http()
+        async with session.get(
+            ENEA_METER_SUMMARY_REFERER,
+            headers={
+                **_BROWSERS,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
             allow_redirects=True,
         ) as resp:
-            body = await resp.text()
-            status = resp.status
-            final = str(resp.url)
+            html = await resp.text()
+            final_url = resp.url
 
-        if status >= 400:
-            raise EneaClientAuthError(f"Login HTTP {status}: {body[:500]!r}")
+        if self._bounced_to_login(final_url):
+            # Try once more via the login entrypoint — Moja PHPSESSID may complete OIDC.
+            async with session.get(
+                ENEA_LOGIN_PAGE_URL,
+                headers={
+                    **_BROWSERS,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                allow_redirects=True,
+            ) as resp2:
+                html = await resp2.text()
+                final_url = resp2.url
 
-        if "/logowanie" in final and (
-            'id="login-form"' in body or "name=\"logowanie\"" in body
-        ):
+        if self._bounced_to_login(final_url):
+            self._ready = False
             raise EneaClientAuthError(
-                "Login rejected (still on login page). "
-                "Check e-mail, password, and whether the account needs an extra browser step."
+                "eBOK session expired — sign in again in a browser and paste "
+                "EBOK_SESSION (and preferably moja.enea.pl PHPSESSID)."
             )
 
-        _LOGGER.debug("eBOK login finished, final URL: %s", final)
-        return final
+        self._ready = True
+        self._discover_ppe(html)
+        await self.async_prepare_meter_session(str(final_url))
+
+    def _discover_ppe(self, html: str) -> None:
+        if self._point_of_delivery_id:
+            return
+        match = re.search(
+            r'pointOfDeliveryId"?\s*[:=]\s*"?'
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            html,
+            re.I,
+        )
+        if match:
+            self._point_of_delivery_id = match.group(1)
+            _LOGGER.debug("eBOK: discovered pointOfDeliveryId=%s", self._point_of_delivery_id)
+
+    async def async_keepalive(self) -> bool:
+        """Touch eBOK so the session does not idle out. True = still signed in."""
+        try:
+            await self.async_ensure_session()
+        except EneaClientAuthError:
+            return False
+        return True
+
+    async def async_validate(self) -> str:
+        """Check the session and return the (possibly discovered) PPE id."""
+        await self.async_ensure_session()
+        self._require_meter_target()
+        return self._point_of_delivery_id
+
+    # --- retained name used by older call sites / smoke script ---
+    async def async_login(self, *, clear_cookies: bool = False) -> str:
+        """Compatibility wrapper: ensure session (optionally drop jar first)."""
+        if clear_cookies and self._session is not None:
+            self._session.cookie_jar.clear()
+            # Re-seed from the originally configured cookies.
+            jar = self._session.cookie_jar
+            jar.update_cookies(
+                {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
+                response_url=URL(ENEA_BASE_URL),
+            )
+            if self._ebok_cookies:
+                jar.update_cookies(self._ebok_cookies, response_url=URL(ENEA_BASE_URL))
+            if self._sso_cookies:
+                jar.update_cookies(self._sso_cookies, response_url=URL(ENEA_SSO_URL))
+            self._ready = False
+        await self.async_ensure_session()
+        return ENEA_METER_SUMMARY_REFERER
 
     async def _async_select_current_client_context(self) -> None:
         """GET select-current-client/{id} — select context when multiple clients exist."""
         cid = self._current_client_id
+        if not cid:
+            return
         url = f"{ENEA_SELECT_CURRENT_CLIENT_BASE}{cid}"
+        session = self._ensure_http()
         headers = {
             **_BROWSERS,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Referer": ENEA_DASHBOARD_MANY_CLIENTS_URL,
         }
-        async with self._session.get(
-            url, headers=headers, allow_redirects=True
-        ) as resp:
+        async with session.get(url, headers=headers, allow_redirects=True) as resp:
             await resp.read()
-            status = resp.status
-            final = str(resp.url)
-        _LOGGER.debug(
-            "eBOK client selection: GET select-current-client → HTTP %s, URL %s",
-            status,
-            final,
-        )
-        if status >= 400:
-            _LOGGER.warning(
-                "eBOK client selection returned HTTP %s — meter API may respond with 401",
-                status,
-            )
+            if resp.status >= 400:
+                _LOGGER.warning(
+                    "eBOK client selection returned HTTP %s — meter API may respond with 401",
+                    resp.status,
+                )
 
     async def _async_bind_point_from_many_clients_dashboard(self) -> None:
-        """Multi-contract account: follow link with our pointOfDeliveryId (session for /meter/ API)."""
+        """Multi-contract account: follow link with our pointOfDeliveryId."""
+        session = self._ensure_http()
         pid = self._point_of_delivery_id
+        if not pid:
+            return
         pid_compact = pid.replace("-", "").lower()
-        async with self._session.get(
+        async with session.get(
             ENEA_DASHBOARD_MANY_CLIENTS_URL,
             headers={
                 **_BROWSERS,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://ebok.enea.pl/",
+                "Referer": f"{ENEA_BASE_URL}/",
             },
             allow_redirects=True,
         ) as resp:
@@ -353,7 +313,7 @@ class EneaClient:
             if href.startswith("//"):
                 full = "https:" + href
             elif href.startswith("/"):
-                full = "https://ebok.enea.pl" + href
+                full = ENEA_BASE_URL + href
             elif href.startswith("http"):
                 full = href
             else:
@@ -372,7 +332,7 @@ class EneaClient:
         )
 
         for url in to_visit[:8]:
-            async with self._session.get(
+            async with session.get(
                 url,
                 headers={
                     **_BROWSERS,
@@ -382,17 +342,10 @@ class EneaClient:
                 allow_redirects=True,
             ) as r2:
                 await r2.read()
-                _LOGGER.debug("eBOK PPE: GET %s → HTTP %s", url, r2.status)
             referer = url
 
-        if not to_visit:
-            _LOGGER.debug(
-                "eBOK many-clients: no link with pointOfDeliveryId in HTML (length=%s)",
-                len(html),
-            )
-
-    async def async_prepare_meter_session(self, login_final_url: str) -> None:
-        """After login: select client (multi-contract) or scan links and open the chart page."""
+    async def async_prepare_meter_session(self, login_final_url: str = "") -> None:
+        """After session check: select client (multi-contract) and warm the chart page."""
         if self._current_client_id:
             await self._async_select_current_client_context()
             referer = ENEA_DASHBOARD_MANY_CLIENTS_URL
@@ -400,17 +353,19 @@ class EneaClient:
             await self._async_bind_point_from_many_clients_dashboard()
             referer = (
                 ENEA_DASHBOARD_MANY_CLIENTS_URL
-                if "many-clients" in login_final_url.lower()
-                else "https://ebok.enea.pl/"
+                if "many-clients" in (login_final_url or "").lower()
+                else f"{ENEA_BASE_URL}/"
             )
 
+        session = self._ensure_http()
         pid = self._point_of_delivery_id
-
         for path in (
-            f"{ENEA_METER_SUMMARY_REFERER}?pointOfDeliveryId={pid}",
+            f"{ENEA_METER_SUMMARY_REFERER}?pointOfDeliveryId={pid}" if pid else "",
             ENEA_METER_SUMMARY_REFERER,
         ):
-            async with self._session.get(
+            if not path:
+                continue
+            async with session.get(
                 path,
                 headers={
                     **_BROWSERS,
@@ -420,32 +375,40 @@ class EneaClient:
                 allow_redirects=True,
             ) as resp:
                 await resp.read()
-                if resp.status >= 400:
-                    _LOGGER.warning(
-                        "Meter warm-up %s → HTTP %s", path, resp.status
-                    )
             referer = ENEA_METER_SUMMARY_REFERER
 
     async def async_fetch_balancing_json(self, day: date) -> str:
-        """POST summaryBalancingChart — returns JSON body (not CSV) for one day."""
+        """POST summaryBalancingChart — returns JSON body for one day."""
+        if not self._ready:
+            await self.async_ensure_session()
         self._require_meter_target()
+        session = self._ensure_http()
         form = {
             "duration": "day",
             "date": _format_date_pl(day),
             "pointOfDeliveryId": self._point_of_delivery_id,
         }
-        async with self._session.post(
+        async with session.post(
             ENEA_METER_SUMMARY_URL,
             data=form,
             headers=_METER_HEADERS,
         ) as resp:
             text = await resp.text()
-            if resp.status == 401:
+            if resp.status == 401 or self._looks_like_login_html(text):
+                self._ready = False
                 raise EneaClientAuthError(
-                    f"Balancing for {day}: HTTP 401 (unauthorized — eBOK session)."
+                    f"Balancing for {day}: unauthorized — eBOK session expired."
                 )
             if resp.status >= 400:
                 raise RuntimeError(
                     f"Balancing for {day}: HTTP {resp.status} — {text[:400]!r}"
                 )
         return text
+
+    @staticmethod
+    def _looks_like_login_html(text: str) -> bool:
+        stripped = text.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            return False
+        lower = text.casefold()
+        return "moja.enea.pl" in lower or "logowanie" in lower[:2000]

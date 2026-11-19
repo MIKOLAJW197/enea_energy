@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -16,11 +17,11 @@ from homeassistant.util import dt as dt_util
 from .balancing_parser import EneaBalancingParseError, parse_balancing_json
 from .const import (
     CONF_CURRENT_CLIENT_ID,
+    CONF_EBOK_COOKIE,
     CONF_EXPORT_RECOVERY_PERCENT,
-    CONF_PASSWORD,
     CONF_POINT_OF_DELIVERY_ID,
+    CONF_SSO_COOKIE,
     CONF_START_DATE,
-    CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
     RECENT_DATA_LAG_DAYS,
@@ -137,8 +138,6 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
-        self._username = entry.data[CONF_USERNAME]
-        self._password = entry.data[CONF_PASSWORD]
         self._point_of_delivery_id = str(
             entry.data.get(CONF_POINT_OF_DELIVERY_ID, "")
         ).strip()
@@ -148,6 +147,12 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._start_date = date.fromisoformat(entry.data[CONF_START_DATE])
         pct = int(entry.data.get(CONF_EXPORT_RECOVERY_PERCENT, DEFAULT_EXPORT_RECOVERY_PERCENT))
         self._export_recovery_ratio = max(0.0, min(1.0, pct / 100.0))
+        self._client = EneaClient(
+            entry.data.get(CONF_EBOK_COOKIE),
+            entry.data.get(CONF_SSO_COOKIE),
+            point_of_delivery_id=self._point_of_delivery_id,
+            current_client_id=self._current_client_id,
+        )
 
         super().__init__(
             hass,
@@ -157,6 +162,48 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.entry.entry_id}")
         self._persisted: dict[str, Any] = {}
+
+    async def async_shutdown_client(self) -> None:
+        await self._client.close()
+
+    async def async_keepalive(self, _now: datetime | None = None) -> None:
+        """Periodic touch so the browser session does not idle out."""
+        ok = await self._client.async_keepalive()
+        if ok:
+            await self._async_persist_cookies()
+        else:
+            _LOGGER.warning(
+                "Enea: session keepalive failed — re-authentication required"
+            )
+
+    async def _async_persist_cookies(self) -> None:
+        ebok, sso = self._client.export_cookies()
+        if (
+            ebok == self.entry.data.get(CONF_EBOK_COOKIE)
+            and sso == self.entry.data.get(CONF_SSO_COOKIE, "")
+        ):
+            return
+        new_data = {
+            **self.entry.data,
+            CONF_EBOK_COOKIE: ebok,
+            CONF_SSO_COOKIE: sso,
+        }
+        if self._client.point_of_delivery_id:
+            new_data[CONF_POINT_OF_DELIVERY_ID] = self._client.point_of_delivery_id
+            self._point_of_delivery_id = self._client.point_of_delivery_id
+        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+    async def _async_ensure_client(self) -> EneaClient:
+        try:
+            await self._client.async_ensure_session()
+        except EneaClientAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except EneaClientConfigError as err:
+            raise UpdateFailed(str(err)) from err
+        await self._async_persist_cookies()
+        if self._client.point_of_delivery_id:
+            self._point_of_delivery_id = self._client.point_of_delivery_id
+        return self._client
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -284,25 +331,15 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._cursor_looks_like_empty_placeholder():
             return self._heal_sync_cursor(last_synced)
 
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            client = EneaClient(
-                session,
-                self._username,
-                self._password,
-                self._point_of_delivery_id,
-                self._current_client_id,
-            )
-            try:
-                login_final = await client.async_login()
-                await client.async_prepare_meter_session(login_final)
-            except (EneaClientConfigError, EneaClientAuthError) as err:
-                _LOGGER.warning("Enea: cursor repair login failed: %s", err)
-                return self._heal_sync_cursor(last_synced)
+        try:
+            client = await self._async_ensure_client()
+        except (ConfigEntryAuthFailed, UpdateFailed) as err:
+            _LOGGER.warning("Enea: cursor repair login failed: %s", err)
+            return self._heal_sync_cursor(last_synced)
 
-            published = await self._async_probe_last_published_day(
-                client, through=last_synced
-            )
+        published = await self._async_probe_last_published_day(
+            client, through=last_synced
+        )
 
         if published is None or published >= last_synced:
             return self._heal_sync_cursor(last_synced)
@@ -424,13 +461,12 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except EneaClientAuthError as err:
                 if attempt == 0:
                     _LOGGER.info(
-                        "eBOK 401 — re-login (day %s): %s",
+                        "eBOK 401 — re-check session (day %s): %s",
                         d.isoformat(),
                         err,
                     )
                     try:
-                        login_final = await client.async_login(clear_cookies=True)
-                        await client.async_prepare_meter_session(login_final)
+                        await client.async_login(clear_cookies=True)
                     except (EneaClientAuthError, EneaClientConfigError) as login_err:
                         _LOGGER.warning("Day %s: %s", d.isoformat(), login_err)
                         return None
@@ -486,24 +522,14 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         base_imp = cum_imp - last_total_imp
         base_exp = cum_exp - last_total_exp
 
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            client = EneaClient(
-                session,
-                self._username,
-                self._password,
-                self._point_of_delivery_id,
-                self._current_client_id,
-            )
-            try:
-                login_final = await client.async_login()
-                await client.async_prepare_meter_session(login_final)
-            except (EneaClientConfigError, EneaClientAuthError) as err:
-                _LOGGER.warning("Statistics refresh (day %s): %s", day.isoformat(), err)
-                return
-            row = await self._async_fetch_row(client, day)
-            if row is None or _row_lacks_published_data(row, self._today_local()):
-                return
+        try:
+            client = await self._async_ensure_client()
+        except (ConfigEntryAuthFailed, UpdateFailed) as err:
+            _LOGGER.warning("Statistics refresh (day %s): %s", day.isoformat(), err)
+            return
+        row = await self._async_fetch_row(client, day)
+        if row is None or _row_lacks_published_data(row, self._today_local()):
+            return
 
         _LOGGER.info(
             "Enea: refreshing hourly data for last day %s (24 API segments)",
@@ -562,10 +588,10 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Enea: no new days in queue — refreshing last day %s only",
                 last_synced.isoformat(),
             )
-            if self._point_of_delivery_id:
-                await self._async_refresh_last_day_hourly_statistics(last_synced)
+            await self._async_refresh_last_day_hourly_statistics(last_synced)
             return self._status_payload(sync_through)
 
+        client = await self._async_ensure_client()
         if not self._point_of_delivery_id:
             raise UpdateFailed(
                 "Missing point of delivery ID (pointOfDeliveryId). "
@@ -581,94 +607,78 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sync_through.isoformat(),
         )
 
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            client = EneaClient(
-                session,
-                self._username,
-                self._password,
-                self._point_of_delivery_id,
-                self._current_client_id,
+        cum_imp = float(self._persisted.get("cum_import_kwh", 0.0))
+        cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
+        points_imp: list[tuple[datetime, float]] = []
+        points_exp: list[tuple[datetime, float]] = []
+        last_ok: date | None = last_synced
+        last_row: DailyEnergyRow | None = None
+        batch_oldest: date | None = None
+
+        for idx, d in enumerate(day_list, start=1):
+            _LOGGER.info(
+                "Enea eBOK: fetching balancing for %s — %s/%s in this batch "
+                "(range %s → %s)",
+                d.isoformat(),
+                idx,
+                total_days,
+                start.isoformat(),
+                sync_through.isoformat(),
             )
-            try:
-                login_final = await client.async_login()
-                await client.async_prepare_meter_session(login_final)
-            except EneaClientConfigError as err:
-                raise UpdateFailed(str(err)) from err
-            except EneaClientAuthError as err:
-                raise UpdateFailed(str(err)) from err
-
-            cum_imp = float(self._persisted.get("cum_import_kwh", 0.0))
-            cum_exp = float(self._persisted.get("cum_export_kwh", 0.0))
-            points_imp: list[tuple[datetime, float]] = []
-            points_exp: list[tuple[datetime, float]] = []
-            last_ok: date | None = last_synced
-            last_row: DailyEnergyRow | None = None
-            batch_oldest: date | None = None
-
-            for idx, d in enumerate(day_list, start=1):
+            row = await self._async_fetch_row(client, d)
+            if row is None:
                 _LOGGER.info(
-                    "Enea eBOK: fetching balancing for %s — %s/%s in this batch "
-                    "(range %s → %s)",
+                    "Enea: fetch failed for %s — stopping batch (skipping remaining days)",
                     d.isoformat(),
-                    idx,
-                    total_days,
-                    start.isoformat(),
-                    sync_through.isoformat(),
                 )
-                row = await self._async_fetch_row(client, d)
-                if row is None:
-                    _LOGGER.info(
-                        "Enea: fetch failed for %s — stopping batch (skipping remaining days)",
-                        d.isoformat(),
-                    )
-                    break
-                if _row_lacks_published_data(row, self._today_local()):
-                    _LOGGER.info(
-                        "Enea: eBOK has not published day %s yet — stopping batch",
-                        d.isoformat(),
-                    )
-                    break
-
-                cum_imp, cum_exp = self._append_hourly_points(
-                    row, cum_imp, cum_exp, points_imp, points_exp
-                )
-                last_ok = d
-                last_row = row
-                batch_oldest = d if batch_oldest is None else min(batch_oldest, d)
-
-            if points_imp:
+                break
+            if _row_lacks_published_data(row, self._today_local()):
                 _LOGGER.info(
-                    "Enea: writing to recorder — %s hourly points (cumulative kWh), "
-                    "last day in batch: %s",
-                    len(points_imp),
-                    last_ok.isoformat() if last_ok else "?",
+                    "Enea: eBOK has not published day %s yet — stopping batch",
+                    d.isoformat(),
                 )
-                async_add_hourly_cumulative_statistics(
-                    self.hass,
-                    statistic_id_import=self.statistic_id_import,
-                    statistic_id_export=self.statistic_id_export,
-                    points_imp=points_imp,
-                    points_exp=points_exp,
-                )
-                _persist_cumulative_from_statistic_points(
-                    self._persisted, points_imp, points_exp
-                )
-                assert last_ok is not None
-                self._persisted["last_synced_day"] = last_ok.isoformat()
-                self._persisted["last_nonempty_synced_day"] = last_ok.isoformat()
-                if batch_oldest is not None:
-                    po = self._persisted.get("oldest_synced_day")
-                    if po:
-                        self._persisted["oldest_synced_day"] = min(
-                            date.fromisoformat(po), batch_oldest
-                        ).isoformat()
-                    else:
-                        self._persisted["oldest_synced_day"] = batch_oldest.isoformat()
-                if last_row is not None:
-                    self._store_last_day_totals(last_row)
-                await self._async_save_store()
-            elif last_synced is not None and self._point_of_delivery_id:
-                await self._async_refresh_last_day_hourly_statistics(last_synced)
+                break
 
+            cum_imp, cum_exp = self._append_hourly_points(
+                row, cum_imp, cum_exp, points_imp, points_exp
+            )
+            last_ok = d
+            last_row = row
+            batch_oldest = d if batch_oldest is None else min(batch_oldest, d)
+
+        if points_imp:
+            _LOGGER.info(
+                "Enea: writing to recorder — %s hourly points (cumulative kWh), "
+                "last day in batch: %s",
+                len(points_imp),
+                last_ok.isoformat() if last_ok else "?",
+            )
+            async_add_hourly_cumulative_statistics(
+                self.hass,
+                statistic_id_import=self.statistic_id_import,
+                statistic_id_export=self.statistic_id_export,
+                points_imp=points_imp,
+                points_exp=points_exp,
+            )
+            _persist_cumulative_from_statistic_points(
+                self._persisted, points_imp, points_exp
+            )
+            assert last_ok is not None
+            self._persisted["last_synced_day"] = last_ok.isoformat()
+            self._persisted["last_nonempty_synced_day"] = last_ok.isoformat()
+            if batch_oldest is not None:
+                po = self._persisted.get("oldest_synced_day")
+                if po:
+                    self._persisted["oldest_synced_day"] = min(
+                        date.fromisoformat(po), batch_oldest
+                    ).isoformat()
+                else:
+                    self._persisted["oldest_synced_day"] = batch_oldest.isoformat()
+            if last_row is not None:
+                self._store_last_day_totals(last_row)
+            await self._async_save_store()
+        elif last_synced is not None and self._point_of_delivery_id:
+            await self._async_refresh_last_day_hourly_statistics(last_synced)
+
+        await self._async_persist_cookies()
         return self._status_payload(sync_through)

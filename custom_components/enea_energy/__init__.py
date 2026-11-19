@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 
 from .const import (
+    CONF_EBOK_COOKIE,
     CONF_POINT_OF_DELIVERY_ID,
     DAILY_CHECK_HOUR,
     DAILY_CHECK_MINUTE,
     DOMAIN,
+    KEEPALIVE_MINUTES,
 )
 from .coordinator import EneaEnergyCoordinator
 
@@ -46,13 +49,21 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data.pop(_LEGACY_DATA_LAG_DAYS, None)
         version = 4
 
+    if version == 4:
+        # Password login no longer works (Moja Enea OIDC + reCAPTCHA / 2FA).
+        # Keep legacy fields for title hints; setup will require CONF_EBOK_COOKIE.
+        data.setdefault(CONF_EBOK_COOKIE, "")
+        version = 5
+
     if version != entry.version:
         hass.config_entries.async_update_entry(entry, data=data, version=version)
 
     return True
 
 
-def _schedule_daily_check(hass: HomeAssistant, entry: ConfigEntry, coordinator: EneaEnergyCoordinator) -> None:
+def _schedule_daily_check(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: EneaEnergyCoordinator
+) -> None:
     @callback
     def _daily_check(_now: datetime) -> None:
         hass.async_create_task(coordinator.async_request_refresh())
@@ -69,13 +80,26 @@ def _schedule_daily_check(hass: HomeAssistant, entry: ConfigEntry, coordinator: 
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    if not str(entry.data.get(CONF_EBOK_COOKIE) or "").strip():
+        raise ConfigEntryAuthFailed(
+            "eBOK wymaga teraz logowania w przeglądarce (reCAPTCHA / 2FA) — "
+            "wklej cookie EBOK_SESSION (i najlepiej PHPSESSID z moja.enea.pl)."
+        )
+
     coordinator = EneaEnergyCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     _schedule_daily_check(hass, entry, coordinator)
-    await coordinator.async_config_entry_first_refresh()
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            coordinator.async_keepalive,
+            timedelta(minutes=KEEPALIVE_MINUTES),
+        )
+    )
 
+    await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -84,5 +108,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     if DOMAIN in hass.data:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        coordinator: EneaEnergyCoordinator | None = hass.data[DOMAIN].pop(
+            entry.entry_id, None
+        )
+        if coordinator is not None:
+            await coordinator.async_shutdown_client()
     return True

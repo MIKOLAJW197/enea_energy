@@ -3,35 +3,46 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "You need two UUIDs: `pointOfDeliveryId` from the POST body of `summaryBalancingChart`; if your account has multiple contracts, also `current_client_id` from `…/dashboard/select-current-client/<UUID>` after selecting the right contract. Hourly data is stored as external recorder statistics — use a Lovelace Statistics card with the statistic ID (integration log / Developer Tools → Statistics).",
+        "description": "Since ~2026-10 eBOK signs in via moja.enea.pl (reCAPTCHA / SMS). Sign in in your browser, then copy EBOK_SESSION from ebok.enea.pl and (recommended) PHPSESSID from moja.enea.pl via DevTools → Application → Cookies. Do not log out. pointOfDeliveryId can be left empty (auto-discovered); for multiple contracts also set current_client_id from …/select-current-client/<UUID>.",
         "data": {
-          "username": "E-mail (eBOK)",
-          "password": "Password",
-          "point_of_delivery_id": "Point of delivery — pointOfDeliveryId",
-          "current_client_id": "Optional: client ID from select-current-client/… URL (multiple contracts)",
+          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
+          "sso_cookie": "PHPSESSID (moja.enea.pl) — recommended",
+          "point_of_delivery_id": "Point of delivery — pointOfDeliveryId (optional)",
+          "current_client_id": "Optional: client ID from select-current-client/… URL",
           "start_date": "History start date",
           "export_recovery_percent": "Export recovery rate (prosumer)"
         }
       },
       "reconfigure": {
         "title": "Enea Energy",
-        "description": "Update settings. Leave password empty to keep the current one.",
+        "description": "Update settings. Leave cookie fields empty to keep the current session.",
         "data": {
-          "username": "E-mail (eBOK)",
-          "password": "Password (empty = unchanged)",
+          "ebok_cookie": "EBOK_SESSION (empty = unchanged)",
+          "sso_cookie": "PHPSESSID (empty = unchanged)",
           "point_of_delivery_id": "Point of delivery (pointOfDeliveryId)",
           "current_client_id": "Optional: UUID from …/select-current-client/…",
           "start_date": "History start date",
           "export_recovery_percent": "Export recovery rate (prosumer)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Enea Energy",
+        "description": "The eBOK session for “{title}” expired. Sign in in a browser and paste fresh cookies.",
+        "data": {
+          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
+          "sso_cookie": "PHPSESSID (moja.enea.pl) — recommended"
+        }
       }
     },
     "error": {
       "invalid_start_date": "Invalid history start date.",
-      "invalid_point_of_delivery": "Enter the point of delivery ID (UUID from DevTools → Network)."
+      "invalid_point_of_delivery": "Could not determine the point of delivery — enter the UUID from DevTools → Network.",
+      "invalid_session": "Session rejected. Sign in in a browser and paste fresh EBOK_SESSION / PHPSESSID.",
+      "cannot_connect": "Could not connect to eBOK / Moja Enea."
     },
     "abort": {
-      "reconfigure_successful": "Settings saved. The integration was reloaded."
+      "reconfigure_successful": "Settings saved. The integration was reloaded.",
+      "reauth_successful": "Session refreshed. The integration was reloaded."
     }
   },
   "entity": {

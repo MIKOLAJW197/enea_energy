@@ -24,11 +24,12 @@ no entities/platforms of its own.
 - There is no automated test suite in this repo.
 
 ### Non-obvious gotchas
-- **External portal / credentials**: adding the integration only validates the start date
-  and `point_of_delivery_id` in the config flow. Actual data fetching happens in the
-  coordinator's first refresh, which requires *real* Enea eBOK credentials plus a valid
-  `pointOfDeliveryId` and internet access to `ebok.enea.pl`. Without them the config entry
-  is still created but shows "retrying setup" — this is expected, not a code bug.
+- **External portal / session**: since ~2026-10 eBOK signs in via Moja Enea OIDC
+  (`moja.enea.pl`) with reCAPTCHA and optional SMS/e-mail 2FA. The integration does **not**
+  submit username/password — configure with browser cookies `EBOK_SESSION` (+ recommended
+  `PHPSESSID` from moja.enea.pl). Config flow validates the session against eBOK. Local
+  smoke test: fill `.local/dev_config.json` (gitignored) and run
+  `.venv/bin/python scripts/smoke_ebok.py --day YYYY-MM-DD`.
 - **Compiler for optional HA deps**: on this image the default `c++`/`cc` alternatives
   point at clang, which fails to build some optional Home Assistant dependencies
   (`pymicro-vad`, `pyspeex-noise`) with `fatal error: 'cstdint' file not found`. The
