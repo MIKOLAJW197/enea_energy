@@ -7,7 +7,7 @@ hourly energy series **after balancing** (prosument: pobrana / oddana).
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -221,7 +221,7 @@ class EneaClient:
 
 
 def _ms_to_local_date(ms: float) -> date:
-    utc = datetime.fromtimestamp(float(ms) / 1000.0, tz=timezone.utc)
+    utc = datetime.fromtimestamp(float(ms) / 1000.0, tz=UTC)
     try:
         from zoneinfo import ZoneInfo
 
@@ -250,8 +250,8 @@ def billing_period_starts_from_dashboard(data: dict[str, Any]) -> list[date]:
         time_from, time_to = segment.get("timeFrom"), segment.get("timeTo")
         if i == 0 or time_from is None or time_to is None:
             continue
-        start = datetime.fromtimestamp(float(time_from) / 1000.0, tz=timezone.utc)
-        end = datetime.fromtimestamp(float(time_to) / 1000.0, tz=timezone.utc)
+        start = datetime.fromtimestamp(float(time_from) / 1000.0, tz=UTC)
+        end = datetime.fromtimestamp(float(time_to) / 1000.0, tz=UTC)
         if end - start >= min_span:
             starts.append(_ms_to_local_date(time_from))
     return starts
