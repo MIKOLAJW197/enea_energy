@@ -200,7 +200,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_point_of_delivery"
             except InvalidSession:
                 errors["base"] = "invalid_session"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Enea Energy: unexpected error during setup")
                 errors["base"] = "cannot_connect"
             else:
@@ -242,7 +242,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_point_of_delivery"
             except InvalidSession:
                 errors["base"] = "invalid_session"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Enea Energy: unexpected error during reconfigure")
                 errors["base"] = "cannot_connect"
             else:
@@ -278,7 +278,7 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_session"
             except InvalidPod:
                 errors["base"] = "invalid_point_of_delivery"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOGGER.exception("Enea Energy: unexpected error during reauth")
                 errors["base"] = "cannot_connect"
             else:

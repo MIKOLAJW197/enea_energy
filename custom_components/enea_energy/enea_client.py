@@ -170,9 +170,7 @@ class EneaClient:
             return True
         if "signin-oidc" in path or "/logowanie" in path.lower():
             return True
-        if "moja.enea.pl" in host:
-            return True
-        return False
+        return "moja.enea.pl" in host
 
     def _require_meter_target(self) -> None:
         if not self._point_of_delivery_id:
@@ -225,7 +223,7 @@ class EneaClient:
             r'pointOfDeliveryId"?\s*[:=]\s*"?'
             r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
             html,
-            re.I,
+            re.IGNORECASE,
         )
         if match:
             self._point_of_delivery_id = match.group(1)
@@ -408,7 +406,7 @@ class EneaClient:
     @staticmethod
     def _looks_like_login_html(text: str) -> bool:
         stripped = text.lstrip()
-        if stripped.startswith("{") or stripped.startswith("["):
+        if stripped.startswith(("{", "[")):
             return False
         lower = text.casefold()
         return "moja.enea.pl" in lower or "logowanie" in lower[:2000]
