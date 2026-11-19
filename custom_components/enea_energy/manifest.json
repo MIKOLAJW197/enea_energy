@@ -4,11 +4,11 @@
   "icon": "mdi:lightning-bolt",
   "codeowners": ["@MIKOLAJW197"],
   "config_flow": true,
-  "dependencies": ["recorder"],
+  "dependencies": [],
   "documentation": "https://github.com/MIKOLAJW197/enea_energy",
   "integration_type": "device",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/MIKOLAJW197/enea_energy/issues",
   "requirements": [],
-  "version": "1.1.1"
+  "version": "2.0.0"
 }

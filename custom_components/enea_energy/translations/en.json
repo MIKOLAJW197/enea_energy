@@ -3,52 +3,69 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "Since ~2026-10 eBOK signs in via moja.enea.pl (reCAPTCHA / SMS). Sign in in your browser, then copy EBOK_SESSION from ebok.enea.pl and (recommended) PHPSESSID from moja.enea.pl via DevTools → Application → Cookies. Do not log out. pointOfDeliveryId can be left empty (auto-discovered); for multiple contracts also set current_client_id from …/select-current-client/<UUID>.",
+        "description": "Sign in to Portal Odbiorcy Enea. Hourly data is fetched **after balancing** for the whole period (start → +1 year). The billing period start is read automatically from the portal. Refresh runs once daily at 07:00.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
-          "sso_cookie": "PHPSESSID (moja.enea.pl) — recommended",
-          "point_of_delivery_id": "Point of delivery — pointOfDeliveryId (optional)",
-          "current_client_id": "Optional: client ID from select-current-client/… URL",
-          "start_date": "History start date",
-          "export_recovery_percent": "Export recovery rate (prosumer)"
+          "username": "E-mail",
+          "password": "Password",
+          "export_recovery_percent": "Recovered share of exported energy (prosumer)"
+        }
+      },
+      "meter": {
+        "title": "Select metering point",
+        "description": "This account has several PPEs — pick the right meter.",
+        "data": {
+          "meter_id": "Metering point (PPE)"
         }
       },
       "reconfigure": {
         "title": "Enea Energy",
-        "description": "Update settings. Leave cookie fields empty to keep the current session.",
+        "description": "Change account or recovery %. Leave password empty to keep the current one. The period start is refreshed from the portal.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (empty = unchanged)",
-          "sso_cookie": "PHPSESSID (empty = unchanged)",
-          "point_of_delivery_id": "Point of delivery (pointOfDeliveryId)",
-          "current_client_id": "Optional: UUID from …/select-current-client/…",
-          "start_date": "History start date",
-          "export_recovery_percent": "Export recovery rate (prosumer)"
+          "username": "E-mail",
+          "password": "Password (empty = keep current)",
+          "export_recovery_percent": "Recovered share of exported energy (prosumer)"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Enea Energy",
-        "description": "The eBOK session for “{title}” expired. Sign in in a browser and paste fresh cookies.",
+        "description": "Portal Odbiorcy login failed for “{title}”. Enter the current password.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
-          "sso_cookie": "PHPSESSID (moja.enea.pl) — recommended"
+          "username": "E-mail",
+          "password": "Password"
         }
       }
     },
     "error": {
-      "invalid_start_date": "Invalid history start date.",
-      "invalid_point_of_delivery": "Could not determine the point of delivery — enter the UUID from DevTools → Network.",
-      "invalid_session": "Session rejected. Sign in in a browser and paste fresh EBOK_SESSION / PHPSESSID.",
-      "cannot_connect": "Could not connect to eBOK / Moja Enea."
+      "invalid_auth": "Invalid e-mail or password.",
+      "no_meters": "No metering points on this account.",
+      "no_billing_period": "Could not read the billing period start from the portal.",
+      "cannot_connect": "Could not reach Portal Odbiorcy Enea."
     },
     "abort": {
       "reconfigure_successful": "Settings saved. The integration was reloaded.",
-      "reauth_successful": "Session refreshed. The integration was reloaded."
+      "reauth_successful": "Login refreshed. The integration was reloaded.",
+      "no_billing_period": "The portal did not return a billing period start.",
+      "cannot_connect": "Could not reach Portal Odbiorcy Enea."
+    }
+  },
+  "selectors": {
+    "export_recovery_percent": {
+      "options": {
+        "70": "70% of exported energy counts toward the balance",
+        "80": "80% of exported energy counts toward the balance (default)"
+      }
     }
   },
   "entity": {
     "sensor": {
       "energy_balance": {
         "name": "Energy balance"
+      },
+      "period_import": {
+        "name": "Energy imported (period)"
+      },
+      "period_export": {
+        "name": "Energy exported (period)"
       }
     }
   }

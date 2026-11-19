@@ -1,57 +1,42 @@
-"""HTTP client for Enea eBOK session + balancing download.
+"""HTTP client for Portal Odbiorcy Enea (operator.enea.pl).
 
-Since ~2026-10 eBOK signs in through OpenID Connect at moja.enea.pl. The password
-form is protected by reCAPTCHA Enterprise and optionally an SMS / e-mail 2FA code,
-so this client never submits credentials. The user signs in in a normal browser and
-hands over session cookies (`EBOK_SESSION`, optionally moja.enea.pl `PHPSESSID`).
-
-The client then:
-- keeps the eBOK session alive with a light periodic request,
-- when the eBOK session is gone, follows the normal OIDC redirect with the Moja
-  Enea session (silent single sign-on — no form, no CAPTCHA),
-- otherwise raises ``EneaClientAuthError`` so Home Assistant can ask for a new
-  browser sign-in.
-
-Hourly meter data is still ``POST /meter/summaryBalancingChart`` → JSON.
+Logs in with e-mail + password, lists metering points (PPE), and downloads
+hourly energy series **after balancing** (prosument: pobrana / oddana).
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import aiohttp
-from yarl import URL
 
 from .const import (
-    EBOK_COOKIE_NAME,
-    ENEA_BASE_URL,
-    ENEA_COOKIEBOT_CONSENT_VALUE,
-    ENEA_DASHBOARD_MANY_CLIENTS_URL,
-    ENEA_LOGIN_PAGE_URL,
-    ENEA_METER_SUMMARY_REFERER,
-    ENEA_METER_SUMMARY_URL,
-    ENEA_SELECT_CURRENT_CLIENT_BASE,
-    ENEA_SSO_URL,
-    SSO_COOKIE_NAME,
+    BILLING_PERIOD_MIN_SEGMENT_DAYS,
+    DASHBOARD_MEASUREMENT_CONSUMPTION,
+    DATA_SOURCE_AFTER_BALANCING,
+    MEASUREMENT_ENERGY_CONSUMED,
+    MEASUREMENT_ENERGY_RETURNED,
+    PORTAL_URL,
+    REQUEST_TIMEOUT_SECONDS,
+    RESOLUTION_HOURLY,
+    URL_CONSUMPTION_RANGE,
+    URL_CONSUMPTION_RANGE_DATA_SOURCE,
+    URL_LOGIN,
+    URL_PPE_DASHBOARD,
+    URL_PPES,
     USER_AGENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-_BROWSERS = {
+_TIMEOUT = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-}
-
-_METER_HEADERS = {
-    **_BROWSERS,
-    "Accept": "*/*",
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    "X-Requested-With": "XMLHttpRequest",
-    "Origin": ENEA_BASE_URL,
-    "Referer": ENEA_METER_SUMMARY_REFERER,
+    "Accept": "application/json, text/plain, */*",
+    "Origin": PORTAL_URL,
+    "Referer": f"{PORTAL_URL}/portalOdbiorcy/",
 }
 
 
@@ -60,373 +45,219 @@ class EneaClientConfigError(RuntimeError):
 
 
 class EneaClientAuthError(RuntimeError):
-    """Session gone and could not be renewed — user must sign in again in a browser."""
+    """Invalid credentials or session expired."""
 
 
-class EneaClientUnavailableError(EneaClientAuthError):
-    """eBOK portal temporarily unavailable."""
-
-
-_KNOWN_COOKIE_NAMES = frozenset({EBOK_COOKIE_NAME, SSO_COOKIE_NAME})
-
-
-def parse_cookies(raw: str | None, default_name: str) -> dict[str, str]:
-    """Accept a bare cookie value, ``name=value``, or a whole ``Cookie:`` header.
-
-    Bare values may contain ``=`` (padding). Those must NOT be split into fake
-    name/value pairs — that was rejecting valid EBOK_SESSION pastes from Chrome.
-    """
-    raw = (raw or "").strip().strip('"').strip("'")
-    if raw.lower().startswith("cookie:"):
-        raw = raw[7:].strip()
-    if not raw:
-        return {}
-
-    # Full Cookie header: a=b; c=d
-    if ";" in raw:
-        cookies: dict[str, str] = {}
-        for part in raw.split(";"):
-            name, sep, value = part.strip().partition("=")
-            if sep and name:
-                cookies[name.strip()] = value.strip().strip('"')
-        return cookies
-
-    # Single "Name=value…value" (value may contain '=')
-    name, sep, value = raw.partition("=")
-    if sep and name in _KNOWN_COOKIE_NAMES | {default_name}:
-        return {name: value.strip().strip('"')}
-
-    # Bare session token (possibly with '=' padding) → default cookie name
-    return {default_name: raw}
-
-
-def format_cookies(cookies: dict[str, str]) -> str:
-    return "; ".join(f"{name}={value}" for name, value in cookies.items())
-
-
-def _format_date_pl(day: date) -> str:
-    return day.strftime("%d.%m.%Y")
+class EneaClientUnavailableError(RuntimeError):
+    """Portal temporarily unavailable / unexpected response."""
 
 
 class EneaClient:
-    """Browser-session client: cookies in → balancing JSON out."""
+    """Portal Odbiorcy session + consumption downloads."""
 
     def __init__(
         self,
-        ebok_cookie: str | None,
-        sso_cookie: str | None = None,
-        point_of_delivery_id: str = "",
-        current_client_id: str = "",
+        username: str,
+        password: str,
         *,
+        meter_id: int | None = None,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
-        self._ebok_cookies = parse_cookies(ebok_cookie, EBOK_COOKIE_NAME)
-        self._sso_cookies = parse_cookies(sso_cookie, SSO_COOKIE_NAME)
-        self._point_of_delivery_id = (point_of_delivery_id or "").strip()
-        self._current_client_id = (current_client_id or "").strip()
-        self._session = session
+        self._username = (username or "").strip()
+        self._password = password or ""
+        self._meter_id = int(meter_id) if meter_id is not None else None
         self._owns_session = session is None
-        self._ready = False
+        self._session = session
+        self._authenticated = False
 
     @property
-    def point_of_delivery_id(self) -> str:
-        return self._point_of_delivery_id
+    def meter_id(self) -> int | None:
+        return self._meter_id
 
     def _ensure_http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            # unsafe=True: accept manually injected host-only session cookies.
-            jar = aiohttp.CookieJar(unsafe=True)
-            ebok = URL(ENEA_BASE_URL)
-            sso = URL(ENEA_SSO_URL)
-            jar.update_cookies(
-                {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
-                response_url=ebok,
-            )
-            if self._ebok_cookies:
-                jar.update_cookies(self._ebok_cookies, response_url=ebok)
-            if self._sso_cookies:
-                jar.update_cookies(self._sso_cookies, response_url=sso)
             self._session = aiohttp.ClientSession(
-                headers={"User-Agent": USER_AGENT},
-                cookie_jar=jar,
-                timeout=aiohttp.ClientTimeout(total=60),
+                cookie_jar=aiohttp.CookieJar(unsafe=True),
+                headers=_HEADERS,
             )
             self._owns_session = True
+            self._authenticated = False
         return self._session
 
     async def close(self) -> None:
-        if self._owns_session and self._session and not self._session.closed:
+        if self._owns_session and self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
-        self._ready = False
+        self._authenticated = False
 
-    def export_cookies(self) -> tuple[str, str]:
-        """Current (possibly rotated) cookies — persist on the config entry."""
-        if self._session is None:
-            return format_cookies(self._ebok_cookies), format_cookies(self._sso_cookies)
-        jar = self._session.cookie_jar
-        ebok = {
-            k: m.value
-            for k, m in jar.filter_cookies(URL(ENEA_BASE_URL)).items()
-            if k == EBOK_COOKIE_NAME
-        } or self._ebok_cookies
-        sso = {
-            k: m.value
-            for k, m in jar.filter_cookies(URL(ENEA_SSO_URL)).items()
-            if not k.startswith("TS")
-        } or self._sso_cookies
-        self._ebok_cookies = ebok
-        self._sso_cookies = sso
-        return format_cookies(ebok), format_cookies(sso)
-
-    @staticmethod
-    def _bounced_to_login(url: URL) -> bool:
-        host = (url.host or "").lower()
-        path = url.path or ""
-        if host and host != URL(ENEA_BASE_URL).host:
-            return True
-        if "signin-oidc" in path or "/logowanie" in path.lower():
-            return True
-        return "moja.enea.pl" in host
-
-    def _require_meter_target(self) -> None:
-        if not self._point_of_delivery_id:
-            raise EneaClientConfigError(
-                "Missing point of delivery ID — configure it in the integration settings."
-            )
-
-    async def async_ensure_session(self) -> None:
-        """Validate the handed-over session; renew via silent SSO when possible."""
+    async def async_login(self) -> None:
+        if not self._username or not self._password:
+            raise EneaClientConfigError("Missing Portal Odbiorcy e-mail or password.")
         session = self._ensure_http()
-        html = ""
-        final_url = URL(ENEA_BASE_URL)
-        probe_urls = (
-            f"{ENEA_BASE_URL}/dashboard",
-            ENEA_METER_SUMMARY_REFERER,
-            ENEA_LOGIN_PAGE_URL,  # OIDC + PHPSESSID may complete silent SSO
-        )
-        for probe in probe_urls:
-            async with session.get(
-                probe,
-                headers={
-                    **_BROWSERS,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                allow_redirects=True,
-            ) as resp:
-                html = await resp.text()
-                final_url = resp.url
-            if not self._bounced_to_login(final_url):
-                break
-
-        if self._bounced_to_login(final_url):
-            self._ready = False
-            _LOGGER.warning(
-                "eBOK session rejected (final URL %s). Cookies present: ebok=%s sso=%s",
-                final_url,
-                bool(self._ebok_cookies.get(EBOK_COOKIE_NAME)),
-                bool(self._sso_cookies.get(SSO_COOKIE_NAME)),
-            )
-            raise EneaClientAuthError(
-                "eBOK session expired — sign in again in a browser and paste "
-                "EBOK_SESSION (and preferably moja.enea.pl PHPSESSID)."
-            )
-
-        self._ready = True
-        self._discover_ppe(html)
-        await self.async_prepare_meter_session(str(final_url))
-
-    def _discover_ppe(self, html: str) -> None:
-        if self._point_of_delivery_id:
-            return
-        match = re.search(
-            r'pointOfDeliveryId"?\s*[:=]\s*"?'
-            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-            html,
-            re.IGNORECASE,
-        )
-        if match:
-            self._point_of_delivery_id = match.group(1)
-            _LOGGER.debug("eBOK: discovered pointOfDeliveryId=%s", self._point_of_delivery_id)
-
-    async def async_keepalive(self) -> bool:
-        """Touch eBOK so the session does not idle out. True = still signed in."""
         try:
-            await self.async_ensure_session()
+            async with session.post(
+                URL_LOGIN,
+                json={"username": self._username, "password": self._password},
+                timeout=_TIMEOUT,
+            ) as resp:
+                if resp.status == 401:
+                    raise EneaClientAuthError("Invalid e-mail or password.")
+                if resp.status != 200:
+                    body = (await resp.text())[:200]
+                    raise EneaClientUnavailableError(
+                        f"Login failed HTTP {resp.status}: {body}"
+                    )
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise EneaClientUnavailableError(f"Cannot reach Portal Odbiorcy: {err}") from err
+        self._authenticated = True
+        _LOGGER.debug("Portal Odbiorcy: authenticated as %s", self._username)
+
+    async def _request(self, method: str, url: str, *, label: str) -> Any:
+        if not self._authenticated:
+            await self.async_login()
+        session = self._ensure_http()
+
+        async def _once() -> Any:
+            async with session.request(method, url, timeout=_TIMEOUT) as resp:
+                if resp.status in (401, 403):
+                    raise EneaClientAuthError(f"{label}: session expired ({resp.status})")
+                if resp.status != 200:
+                    text = (await resp.text())[:300]
+                    raise EneaClientUnavailableError(
+                        f"{label}: unexpected HTTP {resp.status}: {text}"
+                    )
+                return await resp.json()
+
+        try:
+            return await _once()
         except EneaClientAuthError:
-            return False
-        return True
+            self._authenticated = False
+            await self.async_login()
+            return await _once()
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise EneaClientUnavailableError(f"{label}: {err}") from err
 
-    async def async_validate(self) -> str:
-        """Check the session and return the (possibly discovered) PPE id."""
-        await self.async_ensure_session()
-        self._require_meter_target()
-        return self._point_of_delivery_id
+    async def async_list_meters(self) -> list[dict[str, Any]]:
+        data = await self._request("GET", URL_PPES, label="ppes")
+        if not isinstance(data, list):
+            raise EneaClientUnavailableError("Unexpected /user/ppes payload")
+        return data
 
-    # --- retained name used by older call sites / smoke script ---
-    async def async_login(self, *, clear_cookies: bool = False) -> str:
-        """Compatibility wrapper: ensure session (optionally drop jar first)."""
-        if clear_cookies and self._session is not None:
-            self._session.cookie_jar.clear()
-            # Re-seed from the originally configured cookies.
-            jar = self._session.cookie_jar
-            jar.update_cookies(
-                {"CookieConsent": ENEA_COOKIEBOT_CONSENT_VALUE},
-                response_url=URL(ENEA_BASE_URL),
-            )
-            if self._ebok_cookies:
-                jar.update_cookies(self._ebok_cookies, response_url=URL(ENEA_BASE_URL))
-            if self._sso_cookies:
-                jar.update_cookies(self._sso_cookies, response_url=URL(ENEA_SSO_URL))
-            self._ready = False
-        await self.async_ensure_session()
-        return ENEA_METER_SUMMARY_REFERER
+    async def async_get_dashboard(self, meter_id: int | None = None) -> dict[str, Any]:
+        mid = int(meter_id if meter_id is not None else (self._meter_id or 0))
+        if not mid:
+            raise EneaClientConfigError("Missing meter_id.")
+        data = await self._request(
+            "GET", URL_PPE_DASHBOARD.format(meter_id=mid), label="dashboard"
+        )
+        if not isinstance(data, dict):
+            raise EneaClientUnavailableError("Unexpected dashboard payload")
+        return data
 
-    async def _async_select_current_client_context(self) -> None:
-        """GET select-current-client/{id} — select context when multiple clients exist."""
-        cid = self._current_client_id
-        if not cid:
-            return
-        url = f"{ENEA_SELECT_CURRENT_CLIENT_BASE}{cid}"
-        session = self._ensure_http()
-        headers = {
-            **_BROWSERS,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": ENEA_DASHBOARD_MANY_CLIENTS_URL,
-        }
-        async with session.get(url, headers=headers, allow_redirects=True) as resp:
-            await resp.read()
-            if resp.status >= 400:
-                _LOGGER.warning(
-                    "eBOK client selection returned HTTP %s — meter API may respond with 401",
-                    resp.status,
-                )
-
-    async def _async_bind_point_from_many_clients_dashboard(self) -> None:
-        """Multi-contract account: follow link with our pointOfDeliveryId."""
-        session = self._ensure_http()
-        pid = self._point_of_delivery_id
-        if not pid:
-            return
-        pid_compact = pid.replace("-", "").lower()
-        async with session.get(
-            ENEA_DASHBOARD_MANY_CLIENTS_URL,
-            headers={
-                **_BROWSERS,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": f"{ENEA_BASE_URL}/",
-            },
-            allow_redirects=True,
-        ) as resp:
-            html = await resp.text()
-
-        href_rx = re.compile(r"""href\s*=\s*["']([^"'#]+)["']""", re.IGNORECASE)
-        seen: set[str] = set()
-        to_visit: list[str] = []
-        for m in href_rx.finditer(html):
-            href = m.group(1).replace("&amp;", "&").strip()
-            h_norm = href.replace("-", "").lower()
-            if pid not in href and pid_compact not in h_norm:
-                continue
-            if href.startswith("//"):
-                full = "https:" + href
-            elif href.startswith("/"):
-                full = ENEA_BASE_URL + href
-            elif href.startswith("http"):
-                full = href
+    async def async_validate(self) -> dict[str, Any]:
+        """Login, resolve meter, return the selected PPE dict."""
+        meters = await self.async_list_meters()
+        if not meters:
+            raise EneaClientConfigError("No metering points on this Portal Odbiorcy account.")
+        if self._meter_id is None:
+            if len(meters) == 1:
+                self._meter_id = int(meters[0]["id"])
             else:
-                continue
-            if "ebok.enea.pl" not in full or full in seen:
-                continue
-            seen.add(full)
-            to_visit.append(full)
-
-        referer = ENEA_DASHBOARD_MANY_CLIENTS_URL
-        to_visit.sort(
-            key=lambda u: (
-                0 if re.search(r"/meter(/|$)", u, re.IGNORECASE) else 1,
-                len(u),
-            )
+                raise EneaClientConfigError(
+                    "Multiple metering points — select meter_id in the config flow."
+                )
+        for meter in meters:
+            if int(meter["id"]) == self._meter_id:
+                return meter
+        raise EneaClientConfigError(
+            f"Meter id {self._meter_id} is not on this Portal Odbiorcy account."
         )
 
-        for url in to_visit[:8]:
-            async with session.get(
-                url,
-                headers={
-                    **_BROWSERS,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": referer,
-                },
-                allow_redirects=True,
-            ) as r2:
-                await r2.read()
-            referer = url
+    async def async_billing_period_start(self, meter_id: int | None = None) -> date:
+        """Current billing period start from dashboard (same as Enea Licznik)."""
+        dashboard = await self.async_get_dashboard(meter_id)
+        start = billing_period_start_from_dashboard(dashboard)
+        if start is None:
+            raise EneaClientConfigError(
+                "Could not detect billing period start from Portal Odbiorcy dashboard."
+            )
+        return start
 
-    async def async_prepare_meter_session(self, login_final_url: str = "") -> None:
-        """After session check: select client (multi-contract) and warm the chart page."""
-        if self._current_client_id:
-            await self._async_select_current_client_context()
-            referer = ENEA_DASHBOARD_MANY_CLIENTS_URL
-        else:
-            await self._async_bind_point_from_many_clients_dashboard()
-            referer = (
-                ENEA_DASHBOARD_MANY_CLIENTS_URL
-                if "many-clients" in (login_final_url or "").lower()
-                else f"{ENEA_BASE_URL}/"
+    async def async_fetch_energy_range(
+        self,
+        start: date,
+        end: date,
+        *,
+        after_balancing: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return (consumed, returned) raw JSON for [start, end] at hourly resolution."""
+        if self._meter_id is None:
+            raise EneaClientConfigError("Missing meter_id.")
+        if start > end:
+            raise ValueError(f"start ({start}) must be <= end ({end})")
+
+        def _url(measurement: int) -> str:
+            template = (
+                URL_CONSUMPTION_RANGE_DATA_SOURCE
+                if after_balancing
+                else URL_CONSUMPTION_RANGE
+            )
+            return template.format(
+                meter_id=self._meter_id,
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+                measurement_type=measurement,
+                resolution=RESOLUTION_HOURLY,
+                data_source=DATA_SOURCE_AFTER_BALANCING,
             )
 
-        session = self._ensure_http()
-        pid = self._point_of_delivery_id
-        for path in (
-            f"{ENEA_METER_SUMMARY_REFERER}?pointOfDeliveryId={pid}" if pid else "",
-            ENEA_METER_SUMMARY_REFERER,
-        ):
-            if not path:
-                continue
-            async with session.get(
-                path,
-                headers={
-                    **_BROWSERS,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Referer": referer,
-                },
-                allow_redirects=True,
-            ) as resp:
-                await resp.read()
-            referer = ENEA_METER_SUMMARY_REFERER
+        consumed = await self._request(
+            "GET", _url(MEASUREMENT_ENERGY_CONSUMED), label="energy_consumed"
+        )
+        returned = await self._request(
+            "GET", _url(MEASUREMENT_ENERGY_RETURNED), label="energy_returned"
+        )
+        return consumed, returned
 
-    async def async_fetch_balancing_json(self, day: date) -> str:
-        """POST summaryBalancingChart — returns JSON body for one day."""
-        if not self._ready:
-            await self.async_ensure_session()
-        self._require_meter_target()
-        session = self._ensure_http()
-        form = {
-            "duration": "day",
-            "date": _format_date_pl(day),
-            "pointOfDeliveryId": self._point_of_delivery_id,
-        }
-        async with session.post(
-            ENEA_METER_SUMMARY_URL,
-            data=form,
-            headers=_METER_HEADERS,
-        ) as resp:
-            text = await resp.text()
-            if resp.status == 401 or self._looks_like_login_html(text):
-                self._ready = False
-                raise EneaClientAuthError(
-                    f"Balancing for {day}: unauthorized — eBOK session expired."
-                )
-            if resp.status >= 400:
-                raise RuntimeError(
-                    f"Balancing for {day}: HTTP {resp.status} — {text[:400]!r}"
-                )
-        return text
 
-    @staticmethod
-    def _looks_like_login_html(text: str) -> bool:
-        stripped = text.lstrip()
-        if stripped.startswith(("{", "[")):
-            return False
-        lower = text.casefold()
-        return "moja.enea.pl" in lower or "logowanie" in lower[:2000]
+def _ms_to_local_date(ms: float) -> date:
+    utc = datetime.fromtimestamp(float(ms) / 1000.0, tz=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+
+        return utc.astimezone(ZoneInfo("Europe/Warsaw")).date()
+    except Exception:  # noqa: BLE001
+        return utc.date()
+
+
+def billing_period_starts_from_dashboard(data: dict[str, Any]) -> list[date]:
+    """Invoice period starts from ``billingWeekData`` (skip the first window)."""
+    measurement = next(
+        (
+            m
+            for m in data.get("billingWeekData") or []
+            if m.get("measurementId") == DASHBOARD_MEASUREMENT_CONSUMPTION
+        ),
+        None,
+    )
+    if measurement is None:
+        return []
+    min_span = timedelta(days=BILLING_PERIOD_MIN_SEGMENT_DAYS)
+    starts: list[date] = []
+    for i, segment in enumerate(measurement.get("values") or []):
+        if not isinstance(segment, dict):
+            continue
+        time_from, time_to = segment.get("timeFrom"), segment.get("timeTo")
+        if i == 0 or time_from is None or time_to is None:
+            continue
+        start = datetime.fromtimestamp(float(time_from) / 1000.0, tz=timezone.utc)
+        end = datetime.fromtimestamp(float(time_to) / 1000.0, tz=timezone.utc)
+        if end - start >= min_span:
+            starts.append(_ms_to_local_date(time_from))
+    return starts
+
+
+def billing_period_start_from_dashboard(data: dict[str, Any]) -> date | None:
+    """Latest (current) billing period start, or ``None`` if unknown."""
+    starts = billing_period_starts_from_dashboard(data)
+    return starts[-1] if starts else None

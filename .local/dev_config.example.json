@@ -1,8 +1,6 @@
 {
-  "ebok_cookie": "EBOK_SESSION=paste_from_browser",
-  "sso_cookie": "PHPSESSID=paste_from_moja_enea",
-  "current_client_id": "",
-  "point_of_delivery_id": "00000000-0000-0000-0000-000000000000",
-  "start_date": "2026-02-01",
+  "username": "you@example.com",
+  "password": "your-portal-password",
+  "meter_id": 105171,
   "export_recovery_percent": 80
 }

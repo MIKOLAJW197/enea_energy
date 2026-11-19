@@ -1,11 +1,14 @@
 # Enea Energy — Home Assistant custom integration
 
 This repository contains a single Home Assistant **custom integration**, `enea_energy`
-(`custom_components/enea_energy/`). It logs into the Polish Enea eBOK portal
-(`ebok.enea.pl`), downloads daily/hourly energy balancing data for a metering point,
-and writes cumulative hourly **external statistics** into the Home Assistant recorder
-(usable on the Energy dashboard). The integration is UI-configured (config flow) and has
-no entities/platforms of its own.
+(`custom_components/enea_energy/`). It logs into the Polish **Portal Odbiorcy Enea**
+(`portalodbiorcy.operator.enea.pl`), reads **period energy totals after balancing**
+for a metering point (PPE), and exposes three sensors for the current billing window:
+**bilans** (`export × recovery% − import`), **pobrana**, and **oddana** (raw export).
+
+No hourly external statistics — refresh is daily and sensors are period totals.
+
+The integration is UI-configured (config flow). Auth is e-mail + password.
 
 ## Cursor Cloud specific instructions
 
@@ -21,24 +24,16 @@ no entities/platforms of its own.
   `http://localhost:8123`. Use a tmux session; it does not exit on its own.
 - Lint: `~/ha-venv/bin/ruff check custom_components`.
 - Syntax check: `~/ha-venv/bin/python -m compileall custom_components`.
-- There is no automated test suite in this repo.
+- Local smoke test: fill `.local/dev_config.json` (gitignored) and run
+  `.venv/bin/python scripts/smoke_portal.py`.
 
 ### Non-obvious gotchas
-- **External portal / session**: since ~2026-10 eBOK signs in via Moja Enea OIDC
-  (`moja.enea.pl`) with reCAPTCHA and optional SMS/e-mail 2FA. The integration does **not**
-  submit username/password — configure with browser cookies `EBOK_SESSION` (+ recommended
-  `PHPSESSID` from moja.enea.pl). Config flow validates the session against eBOK. Local
-  smoke test: fill `.local/dev_config.json` (gitignored) and run
-  `.venv/bin/python scripts/smoke_ebok.py --day YYYY-MM-DD`.
-- **Compiler for optional HA deps**: on this image the default `c++`/`cc` alternatives
-  point at clang, which fails to build some optional Home Assistant dependencies
-  (`pymicro-vad`, `pyspeex-noise`) with `fatal error: 'cstdint' file not found`. The
-  alternatives are switched to `gcc-13`/`g++-13` so those wheels build. If you reinstall
-  Python or hit that error again, run
-  `sudo update-alternatives --set c++ /usr/bin/g++-13` and
-  `sudo update-alternatives --set cc /usr/bin/gcc-13`.
-- **`default_config` / `go2rtc`**: `default_config` may log a setup failure because the
-  optional `go2rtc` WebRTC binary is not installed. This is unrelated to `enea_energy` and
-  does not block the config flow, recorder, or the UI.
-- The integration UI strings are in Polish (`strings.json`); it appears as **"Enea Energy"**
-  in Settings → Devices & Services → Add Integration.
+- **Billing period**: from dashboard `billingWeekData`. Each sync requests
+  `start` → `start + 1 year − 1 day` once per series (pobrana + oddana) after
+  balancing and reads **`sumConsumption`**.
+- **Refresh**: once daily at 07:00 local time (`async_track_time_change`), plus
+  setup / reload.
+- **`default_config` / `go2rtc`**: may log a setup failure if the optional `go2rtc`
+  binary is missing — unrelated to `enea_energy`.
+- UI strings are in Polish (`strings.json`); it appears as **"Enea Energy"** in
+  Settings → Devices & Services → Add Integration.

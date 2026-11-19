@@ -1,25 +1,22 @@
-"""Enea Energy integration for Home Assistant."""
+"""Enea Energy integration for Home Assistant (Portal Odbiorcy)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import (
-    async_track_time_change,
-    async_track_time_interval,
-)
+from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
-    CONF_EBOK_COOKIE,
-    CONF_POINT_OF_DELIVERY_ID,
+    CONF_METER_ID,
+    CONF_PASSWORD,
+    CONF_USERNAME,
     DAILY_CHECK_HOUR,
     DAILY_CHECK_MINUTE,
     DOMAIN,
-    KEEPALIVE_MINUTES,
 )
 from .coordinator import EneaEnergyCoordinator
 
@@ -31,50 +28,41 @@ PLATFORMS: list[str] = ["sensor"]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-_LEGACY_UPDATE_INTERVAL_HOURS = "update_interval_hours"
-_LEGACY_DATA_LAG_DAYS = "data_lag_days"
-
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate config entry data across schema versions."""
-    data = dict(entry.data)
     version = entry.version
 
-    if version == 1:
-        data.setdefault(CONF_POINT_OF_DELIVERY_ID, "")
-        version = 2
+    # v1–v5 were eBOK / cookie based. v6 switches to Portal Odbiorcy credentials.
+    if version < 6:
+        from .const import CONF_EXPORT_RECOVERY_PERCENT, CONF_START_DATE
 
-    if version == 2:
-        data.pop(_LEGACY_UPDATE_INTERVAL_HOURS, None)
-        version = 3
-
-    if version == 3:
-        data.pop(_LEGACY_DATA_LAG_DAYS, None)
-        version = 4
-
-    if version == 4:
-        # Password login no longer works (Moja Enea OIDC + reCAPTCHA / 2FA).
-        # Keep legacy fields for title hints; setup will require CONF_EBOK_COOKIE.
-        data.setdefault(CONF_EBOK_COOKIE, "")
-        version = 5
-
-    if version != entry.version:
-        hass.config_entries.async_update_entry(entry, data=data, version=version)
+        old = dict(entry.data)
+        data = {
+            CONF_USERNAME: str(old.get(CONF_USERNAME) or "").strip(),
+            CONF_PASSWORD: "",
+        }
+        if old.get(CONF_START_DATE):
+            data[CONF_START_DATE] = old[CONF_START_DATE]
+        if old.get(CONF_EXPORT_RECOVERY_PERCENT) is not None:
+            data[CONF_EXPORT_RECOVERY_PERCENT] = old[CONF_EXPORT_RECOVERY_PERCENT]
+        hass.config_entries.async_update_entry(entry, data=data, version=6)
+        return True
 
     return True
 
 
-def _schedule_daily_check(
+def _schedule_daily_refresh(
     hass: HomeAssistant, entry: ConfigEntry, coordinator: EneaEnergyCoordinator
 ) -> None:
     @callback
-    def _daily_check(_now: datetime) -> None:
+    def _daily(_now: datetime) -> None:
         hass.async_create_task(coordinator.async_request_refresh())
 
     entry.async_on_unload(
         async_track_time_change(
             hass,
-            _daily_check,
+            _daily,
             hour=DAILY_CHECK_HOUR,
             minute=DAILY_CHECK_MINUTE,
             second=0,
@@ -83,24 +71,21 @@ def _schedule_daily_check(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    if not str(entry.data.get(CONF_EBOK_COOKIE) or "").strip():
+    if not str(entry.data.get(CONF_USERNAME) or "").strip() or not entry.data.get(
+        CONF_PASSWORD
+    ):
         raise ConfigEntryAuthFailed(
-            "eBOK wymaga teraz logowania w przeglądarce (reCAPTCHA / 2FA) — "
-            "wklej cookie EBOK_SESSION (i najlepiej PHPSESSID z moja.enea.pl)."
+            "Podaj e-mail i hasło do Portalu Odbiorcy Enea "
+            "(portalodbiorcy.operator.enea.pl)."
         )
+    if entry.data.get(CONF_METER_ID) is None:
+        raise ConfigEntryAuthFailed("Brak wybranego punktu poboru (meter_id).")
 
     coordinator = EneaEnergyCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    _schedule_daily_check(hass, entry, coordinator)
-    entry.async_on_unload(
-        async_track_time_interval(
-            hass,
-            coordinator.async_keepalive,
-            timedelta(minutes=KEEPALIVE_MINUTES),
-        )
-    )
+    _schedule_daily_refresh(hass, entry, coordinator)
 
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-19
+
+### Breaking
+
+- Data source switched from eBOK (`ebok.enea.pl` session cookies) to
+  **Portal Odbiorcy** (`portalodbiorcy.operator.enea.pl`) with e-mail + password
+- Config entry schema version **6** — existing entries must re-authenticate
+- Cookie keepalive / Moja Enea SSO removed
+
+### Added
+
+- Period totals **after balancing** via Portal `sumConsumption`
+- Meter selection when the account has multiple PPEs
+- Period sensors: **Energia pobrana (okres)** and **Energia oddana (okres)** (raw export, no recovery %) alongside bilans
+- Billing period start auto-detected from portal `billingWeekData`
+- Local smoke test `scripts/smoke_portal.py`
+
+### Changed
+
+- Config: `username`, `password`, `export_recovery_percent` (70/80); `meter_id` + `start_date` auto from portal
+- Each sync loads the full billing window (`start` → `+1 year`) and uses **`sumConsumption`** (no hourly history / recorder statistics)
+- Daily refresh at **07:00** local time
+- Three period sensors (**bilans**, **pobrana**, **oddana**)
+
 ## [1.1.1] - 2026-11-19
 
 ### Fixed
@@ -56,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Sync cursor no longer advances past unpublished eBOK days without energy data
 
+[2.0.0]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v2.0.0
 [1.1.1]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.1.1
 [1.1.0]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.1.0
 [1.0.2]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.2

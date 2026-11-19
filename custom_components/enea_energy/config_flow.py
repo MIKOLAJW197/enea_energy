@@ -1,56 +1,35 @@
-"""Config flow for the Enea Energy integration."""
+"""Config flow for the Enea Energy integration (Portal Odbiorcy)."""
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.selector import DateSelector
+from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .const import (
-    CONF_CURRENT_CLIENT_ID,
-    CONF_EBOK_COOKIE,
     CONF_EXPORT_RECOVERY_PERCENT,
-    CONF_POINT_OF_DELIVERY_ID,
-    CONF_SSO_COOKIE,
+    CONF_METER_CODE,
+    CONF_METER_ID,
+    CONF_PASSWORD,
     CONF_START_DATE,
     CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
     EXPORT_RECOVERY_PERCENT_OPTIONS,
 )
-from .enea_client import EneaClient, EneaClientAuthError, EneaClientConfigError
+from .enea_client import (
+    EneaClient,
+    EneaClientAuthError,
+    EneaClientConfigError,
+    EneaClientUnavailableError,
+)
 
 _LOGGER = logging.getLogger(__name__)
-
-DEFAULT_BACKFILL_START = (
-    datetime.now(UTC).date() - timedelta(days=730)
-).isoformat()
-
-
-def _parse_iso_date(value: str) -> date:
-    return date.fromisoformat(value.strip())
-
-
-def _normalize_start_date(value: Any, *, default: str | None = None) -> str:
-    if value is None:
-        if default is None:
-            raise ValueError("missing date")
-        return default
-    if isinstance(value, date):
-        return value.isoformat()
-    try:
-        return _parse_iso_date(str(value)).isoformat()
-    except ValueError as err:
-        if default is not None:
-            return default
-        raise InvalidDate from err
 
 
 def _normalize_export_recovery_percent(value: Any) -> int:
@@ -60,188 +39,223 @@ def _normalize_export_recovery_percent(value: Any) -> int:
     return pct
 
 
-class InvalidDate(HomeAssistantError):
-    """Invalid history start date."""
+class InvalidAuth(HomeAssistantError):
+    """Bad credentials."""
 
 
-class InvalidPod(HomeAssistantError):
-    """Missing point of delivery identifier."""
+class CannotConnect(HomeAssistantError):
+    """Portal unreachable."""
 
 
-class InvalidSession(HomeAssistantError):
-    """Browser session cookies are missing or rejected by eBOK."""
+class NoMeters(HomeAssistantError):
+    """Account has no PPE."""
 
 
-async def _validate_session(
-    hass: HomeAssistant, data: dict[str, Any]
-) -> dict[str, Any]:
-    """Validate cookies against eBOK; return normalised entry data."""
-    _normalize_start_date(data[CONF_START_DATE])
-    ebok = str(data.get(CONF_EBOK_COOKIE) or "").strip()
-    if not ebok:
-        raise InvalidSession
+class NoBillingPeriod(HomeAssistantError):
+    """Dashboard has no billing period start."""
 
-    client = EneaClient(
-        ebok,
-        data.get(CONF_SSO_COOKIE),
-        point_of_delivery_id=str(data.get(CONF_POINT_OF_DELIVERY_ID) or "").strip(),
-        current_client_id=str(data.get(CONF_CURRENT_CLIENT_ID) or "").strip(),
-    )
+
+async def _login_and_list_meters(username: str, password: str) -> list[dict[str, Any]]:
+    client = EneaClient(username, password)
     try:
-        try:
-            ppe = await client.async_validate()
-        except EneaClientAuthError as err:
-            raise InvalidSession from err
-        except EneaClientConfigError as err:
-            raise InvalidPod from err
-        ebok_out, sso_out = client.export_cookies()
+        meters = await client.async_list_meters()
+    except EneaClientAuthError as err:
+        raise InvalidAuth from err
+    except EneaClientUnavailableError as err:
+        raise CannotConnect from err
     finally:
         await client.close()
 
-    out = {
-        **data,
-        CONF_EBOK_COOKIE: ebok_out,
-        CONF_SSO_COOKIE: sso_out,
-        CONF_POINT_OF_DELIVERY_ID: ppe,
-        CONF_CURRENT_CLIENT_ID: str(data.get(CONF_CURRENT_CLIENT_ID) or "").strip(),
-        CONF_START_DATE: _normalize_start_date(data[CONF_START_DATE]),
-        CONF_EXPORT_RECOVERY_PERCENT: _normalize_export_recovery_percent(
-            data.get(CONF_EXPORT_RECOVERY_PERCENT)
-        ),
-    }
-    return out
+    if not meters:
+        raise NoMeters
+    return meters
 
 
-def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
-    normalized = {**user_input}
-    normalized[CONF_START_DATE] = _normalize_start_date(user_input[CONF_START_DATE])
-    normalized[CONF_EBOK_COOKIE] = str(user_input.get(CONF_EBOK_COOKIE) or "").strip()
-    normalized[CONF_SSO_COOKIE] = str(user_input.get(CONF_SSO_COOKIE) or "").strip()
-    normalized[CONF_POINT_OF_DELIVERY_ID] = str(
-        user_input.get(CONF_POINT_OF_DELIVERY_ID) or ""
-    ).strip()
-    normalized[CONF_CURRENT_CLIENT_ID] = str(
-        user_input.get(CONF_CURRENT_CLIENT_ID) or ""
-    ).strip()
-    normalized[CONF_EXPORT_RECOVERY_PERCENT] = _normalize_export_recovery_percent(
-        user_input.get(CONF_EXPORT_RECOVERY_PERCENT)
-    )
-    return normalized
+async def _build_entry_data(
+    *,
+    username: str,
+    password: str,
+    meter_id: int,
+    export_pct: int,
+) -> dict[str, Any]:
+    client = EneaClient(username, password, meter_id=meter_id)
+    try:
+        meter = await client.async_validate()
+        start = await client.async_billing_period_start(meter_id)
+    except EneaClientAuthError as err:
+        raise InvalidAuth from err
+    except EneaClientConfigError as err:
+        msg = str(err).lower()
+        if "billing period" in msg:
+            raise NoBillingPeriod from err
+        raise NoMeters from err
+    except EneaClientUnavailableError as err:
+        raise CannotConnect from err
+    finally:
+        await client.close()
 
-
-def _entry_schema_defaults(entry_data: dict[str, Any]) -> dict[str, Any]:
     return {
-        CONF_EBOK_COOKIE: "",
-        CONF_SSO_COOKIE: "",
-        CONF_POINT_OF_DELIVERY_ID: entry_data.get(CONF_POINT_OF_DELIVERY_ID, ""),
-        CONF_CURRENT_CLIENT_ID: entry_data.get(CONF_CURRENT_CLIENT_ID, ""),
-        CONF_START_DATE: _normalize_start_date(
-            entry_data.get(CONF_START_DATE),
-            default=DEFAULT_BACKFILL_START,
-        ),
-        CONF_EXPORT_RECOVERY_PERCENT: _normalize_export_recovery_percent(
-            entry_data.get(CONF_EXPORT_RECOVERY_PERCENT)
-        ),
+        CONF_USERNAME: username,
+        CONF_PASSWORD: password,
+        CONF_METER_ID: int(meter["id"]),
+        CONF_METER_CODE: str(meter.get("code") or meter["id"]),
+        CONF_START_DATE: start.isoformat(),
+        CONF_EXPORT_RECOVERY_PERCENT: export_pct,
     }
-
-
-def _build_data_schema(defaults: dict[str, Any], *, require_cookies: bool = True) -> vol.Schema:
-    ebok_key = (
-        vol.Required(CONF_EBOK_COOKIE, default=defaults[CONF_EBOK_COOKIE])
-        if require_cookies
-        else vol.Optional(CONF_EBOK_COOKIE, default=defaults[CONF_EBOK_COOKIE])
-    )
-    return vol.Schema(
-        {
-            ebok_key: str,
-            vol.Optional(CONF_SSO_COOKIE, default=defaults[CONF_SSO_COOKIE]): str,
-            vol.Optional(
-                CONF_POINT_OF_DELIVERY_ID,
-                default=defaults[CONF_POINT_OF_DELIVERY_ID],
-            ): str,
-            vol.Optional(
-                CONF_CURRENT_CLIENT_ID,
-                default=defaults[CONF_CURRENT_CLIENT_ID],
-            ): str,
-            vol.Optional(CONF_START_DATE, default=defaults[CONF_START_DATE]): DateSelector(),
-            vol.Optional(
-                CONF_EXPORT_RECOVERY_PERCENT,
-                default=defaults[CONF_EXPORT_RECOVERY_PERCENT],
-            ): vol.In(EXPORT_RECOVERY_PERCENT_OPTIONS),
-        }
-    )
-
-
-def _session_only_schema() -> vol.Schema:
-    return vol.Schema(
-        {
-            vol.Required(CONF_EBOK_COOKIE): str,
-            vol.Optional(CONF_SSO_COOKIE, default=""): str,
-        }
-    )
 
 
 class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Browser session cookies (never password) + metering options."""
+    """E-mail / password / recovery % — start date comes from the portal."""
 
-    VERSION = 5
+    VERSION = 6
+
+    def __init__(self) -> None:
+        self._username: str = ""
+        self._password: str = ""
+        self._meters: list[dict[str, Any]] = []
+        self._export_pct: int = DEFAULT_EXPORT_RECOVERY_PERCENT
+
+    def _user_schema(self) -> vol.Schema:
+        username_field = (
+            vol.Required(CONF_USERNAME, default=self._username)
+            if self._username
+            else vol.Required(CONF_USERNAME)
+        )
+        return vol.Schema(
+            {
+                username_field: str,
+                vol.Required(CONF_PASSWORD): str,
+                vol.Optional(
+                    CONF_EXPORT_RECOVERY_PERCENT,
+                    default=self._export_pct,
+                ): vol.In(EXPORT_RECOVERY_PERCENT_OPTIONS),
+            }
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            user_input = _normalize_user_input(user_input)
+            self._username = str(user_input[CONF_USERNAME]).strip()
+            self._password = str(user_input[CONF_PASSWORD])
+            self._export_pct = _normalize_export_recovery_percent(
+                user_input.get(CONF_EXPORT_RECOVERY_PERCENT)
+            )
             try:
-                data = await _validate_session(self.hass, user_input)
-            except InvalidDate:
-                errors["base"] = "invalid_start_date"
-            except InvalidPod:
-                errors["base"] = "invalid_point_of_delivery"
-            except InvalidSession:
-                errors["base"] = "invalid_session"
+                self._meters = await _login_and_list_meters(
+                    self._username, self._password
+                )
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except NoMeters:
+                errors["base"] = "no_meters"
             except Exception:
-                _LOGGER.exception("Enea Energy: unexpected error during setup")
+                _LOGGER.exception("Enea Energy: unexpected error during login")
                 errors["base"] = "cannot_connect"
             else:
-                await self.async_set_unique_id(data[CONF_POINT_OF_DELIVERY_ID].lower())
-                self._abort_if_unique_id_configured()
-                title_src = data.get(CONF_USERNAME) or data[CONF_POINT_OF_DELIVERY_ID][:8]
-                return self.async_create_entry(
-                    title=f"Enea Energy ({title_src})",
-                    data=data,
-                )
+                if len(self._meters) == 1:
+                    return await self._async_create_from_meter(self._meters[0])
+                return await self.async_step_meter()
 
-        defaults = _entry_schema_defaults({})
         return self.async_show_form(
             step_id="user",
-            data_schema=_build_data_schema(defaults),
+            data_schema=self._user_schema(),
             errors=errors,
         )
+
+    async def async_step_meter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        options = {
+            str(m["id"]): f"{m.get('code') or m['id']} (id {m['id']})"
+            for m in self._meters
+        }
+        if user_input is not None:
+            meter_id = str(user_input[CONF_METER_ID])
+            meter = next((m for m in self._meters if str(m["id"]) == meter_id), None)
+            if meter is None:
+                errors["base"] = "no_meters"
+            else:
+                return await self._async_create_from_meter(meter)
+
+        return self.async_show_form(
+            step_id="meter",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_METER_ID): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": k, "label": v} for k, v in options.items()
+                            ],
+                            mode="dropdown",
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def _async_create_from_meter(self, meter: dict[str, Any]) -> FlowResult:
+        try:
+            data = await _build_entry_data(
+                username=self._username,
+                password=self._password,
+                meter_id=int(meter["id"]),
+                export_pct=self._export_pct,
+            )
+        except InvalidAuth:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=self._user_schema(),
+                errors={"base": "invalid_auth"},
+            )
+        except NoBillingPeriod:
+            return self.async_abort(reason="no_billing_period")
+        except (CannotConnect, NoMeters):
+            return self.async_abort(reason="cannot_connect")
+
+        await self.async_set_unique_id(str(data[CONF_METER_ID]))
+        self._abort_if_unique_id_configured()
+        title = f"Enea Energy ({data[CONF_METER_CODE]})"
+        return self.async_create_entry(title=title, data=data)
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Reconfigure session cookies and metering options."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            user_input = _normalize_user_input(user_input)
-            new_data = {**entry.data, **user_input}
-            # Empty cookie fields keep the stored session.
-            if not user_input.get(CONF_EBOK_COOKIE):
-                new_data[CONF_EBOK_COOKIE] = entry.data.get(CONF_EBOK_COOKIE, "")
-            if not user_input.get(CONF_SSO_COOKIE):
-                new_data[CONF_SSO_COOKIE] = entry.data.get(CONF_SSO_COOKIE, "")
+            username = str(
+                user_input.get(CONF_USERNAME) or entry.data.get(CONF_USERNAME)
+            ).strip()
+            password = str(
+                user_input.get(CONF_PASSWORD) or entry.data.get(CONF_PASSWORD)
+            )
+            export_pct = _normalize_export_recovery_percent(
+                user_input.get(
+                    CONF_EXPORT_RECOVERY_PERCENT,
+                    entry.data.get(CONF_EXPORT_RECOVERY_PERCENT),
+                )
+            )
             try:
-                data = await _validate_session(self.hass, new_data)
-            except InvalidDate:
-                errors["base"] = "invalid_start_date"
-            except InvalidPod:
-                errors["base"] = "invalid_point_of_delivery"
-            except InvalidSession:
-                errors["base"] = "invalid_session"
+                data = await _build_entry_data(
+                    username=username,
+                    password=password,
+                    meter_id=int(entry.data[CONF_METER_ID]),
+                    export_pct=export_pct,
+                )
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except NoBillingPeriod:
+                errors["base"] = "no_billing_period"
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except NoMeters:
+                errors["base"] = "no_meters"
             except Exception:
                 _LOGGER.exception("Enea Energy: unexpected error during reconfigure")
                 errors["base"] = "cannot_connect"
@@ -250,10 +264,22 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reconfigure_successful")
 
-        defaults = _entry_schema_defaults(entry.data)
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_build_data_schema(defaults, require_cookies=False),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
+                    ): str,
+                    vol.Optional(CONF_PASSWORD, default=""): str,
+                    vol.Optional(
+                        CONF_EXPORT_RECOVERY_PERCENT,
+                        default=_normalize_export_recovery_percent(
+                            entry.data.get(CONF_EXPORT_RECOVERY_PERCENT)
+                        ),
+                    ): vol.In(EXPORT_RECOVERY_PERCENT_OPTIONS),
+                }
+            ),
             errors=errors,
         )
 
@@ -263,21 +289,28 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Session expired — take over a fresh browser session."""
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
         if user_input is not None:
-            merged = {
-                **entry.data,
-                CONF_EBOK_COOKIE: str(user_input.get(CONF_EBOK_COOKIE) or "").strip(),
-                CONF_SSO_COOKIE: str(user_input.get(CONF_SSO_COOKIE) or "").strip(),
-            }
+            username = str(
+                user_input.get(CONF_USERNAME) or entry.data.get(CONF_USERNAME)
+            ).strip()
+            password = str(user_input[CONF_PASSWORD])
             try:
-                data = await _validate_session(self.hass, merged)
-            except InvalidSession:
-                errors["base"] = "invalid_session"
-            except InvalidPod:
-                errors["base"] = "invalid_point_of_delivery"
+                data = await _build_entry_data(
+                    username=username,
+                    password=password,
+                    meter_id=int(entry.data[CONF_METER_ID]),
+                    export_pct=_normalize_export_recovery_percent(
+                        entry.data.get(CONF_EXPORT_RECOVERY_PERCENT)
+                    ),
+                )
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except NoBillingPeriod:
+                errors["base"] = "no_billing_period"
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Enea Energy: unexpected error during reauth")
                 errors["base"] = "cannot_connect"
@@ -286,7 +319,14 @@ class EneaEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=_session_only_schema(),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
+                    ): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
             errors=errors,
             description_placeholders={"title": entry.title},
         )

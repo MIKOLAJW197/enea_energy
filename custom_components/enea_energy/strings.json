@@ -3,46 +3,49 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "Od ~10.2026 eBOK loguje przez moja.enea.pl (reCAPTCHA / SMS). Zaloguj się w przeglądarce, potem w DevTools → Application → Cookies skopiuj EBOK_SESSION z ebok.enea.pl oraz (zalecane) PHPSESSID z moja.enea.pl. Nie wylogowuj się. pointOfDeliveryId można zostawić puste — wykryje się z sesji; przy wielu umowach podaj current_client_id z …/select-current-client/<UUID>.",
+        "description": "Logowanie do Portalu Odbiorcy Enea. Dane godzinowe są **po bilansowaniu** dla całego okresu (start → +1 rok). Początek okresu pobierany jest automatycznie z portalu. Odświeżanie raz dziennie o 7:00.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
-          "sso_cookie": "PHPSESSID (moja.enea.pl) — zalecane",
-          "point_of_delivery_id": "Punkt poboru — pointOfDeliveryId (opcjonalnie)",
-          "current_client_id": "Opcjonalnie: ID klienta z URL select-current-client/…",
-          "start_date": "Data początku historii",
+          "username": "E-mail",
+          "password": "Hasło",
           "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
+        }
+      },
+      "meter": {
+        "title": "Wybierz punkt poboru",
+        "description": "Na koncie jest kilka PPE — wybierz właściwy licznik.",
+        "data": {
+          "meter_id": "Punkt poboru (PPE)"
         }
       },
       "reconfigure": {
         "title": "Enea Energy",
-        "description": "Zmiana ustawień. Puste pola cookie = zostaw aktualną sesję.",
+        "description": "Zmiana konta lub % odbioru. Puste hasło = bez zmiany. Data okresu zostanie odświeżona z portalu.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (puste = bez zmiany)",
-          "sso_cookie": "PHPSESSID (puste = bez zmiany)",
-          "point_of_delivery_id": "Punkt poboru (pointOfDeliveryId)",
-          "current_client_id": "Opcjonalnie: UUID z …/select-current-client/…",
-          "start_date": "Data początku historii",
+          "username": "E-mail",
+          "password": "Hasło (puste = bez zmiany)",
           "export_recovery_percent": "Odbiór energii oddanej do sieci (prosument)"
         }
       },
       "reauth_confirm": {
         "title": "Ponowne logowanie Enea Energy",
-        "description": "Sesja eBOK wygasła dla „{title}”. Zaloguj się w przeglądarce i wklej świeże cookie.",
+        "description": "Logowanie do Portalu Odbiorcy nie powiodło się dla „{title}”. Podaj aktualne hasło.",
         "data": {
-          "ebok_cookie": "EBOK_SESSION (ebok.enea.pl)",
-          "sso_cookie": "PHPSESSID (moja.enea.pl) — zalecane"
+          "username": "E-mail",
+          "password": "Hasło"
         }
       }
     },
     "error": {
-      "invalid_start_date": "Niepoprawna data początku historii.",
-      "invalid_point_of_delivery": "Nie udało się ustalić punktu poboru — podaj UUID z DevTools → Network.",
-      "invalid_session": "Sesja odrzucona. Zaloguj się w przeglądarce i wklej świeże EBOK_SESSION / PHPSESSID.",
-      "cannot_connect": "Nie udało się połączyć z eBOK / Moja Enea."
+      "invalid_auth": "Niepoprawny e-mail lub hasło.",
+      "no_meters": "Brak punktów poboru na tym koncie.",
+      "no_billing_period": "Nie udało się odczytać początku okresu rozliczeniowego z portalu.",
+      "cannot_connect": "Nie udało się połączyć z Portalem Odbiorcy Enea."
     },
     "abort": {
       "reconfigure_successful": "Zapisano ustawienia. Integracja została przeładowana.",
-      "reauth_successful": "Sesja odświeżona. Integracja została przeładowana."
+      "reauth_successful": "Logowanie odświeżone. Integracja została przeładowana.",
+      "no_billing_period": "Portal nie zwrócił początku okresu rozliczeniowego.",
+      "cannot_connect": "Nie udało się połączyć z Portalem Odbiorcy Enea."
     }
   },
   "selectors": {
@@ -57,6 +60,12 @@
     "sensor": {
       "energy_balance": {
         "name": "Bilans energii"
+      },
+      "period_import": {
+        "name": "Energia pobrana (okres)"
+      },
+      "period_export": {
+        "name": "Energia oddana (okres)"
       }
     }
   }
