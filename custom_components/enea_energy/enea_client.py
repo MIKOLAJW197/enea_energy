@@ -67,21 +67,37 @@ class EneaClientUnavailableError(EneaClientAuthError):
     """eBOK portal temporarily unavailable."""
 
 
+_KNOWN_COOKIE_NAMES = frozenset({EBOK_COOKIE_NAME, SSO_COOKIE_NAME})
+
+
 def parse_cookies(raw: str | None, default_name: str) -> dict[str, str]:
-    """Accept a bare cookie value, ``name=value``, or a whole ``Cookie:`` header."""
-    raw = (raw or "").strip()
+    """Accept a bare cookie value, ``name=value``, or a whole ``Cookie:`` header.
+
+    Bare values may contain ``=`` (padding). Those must NOT be split into fake
+    name/value pairs — that was rejecting valid EBOK_SESSION pastes from Chrome.
+    """
+    raw = (raw or "").strip().strip('"').strip("'")
     if raw.lower().startswith("cookie:"):
         raw = raw[7:].strip()
     if not raw:
         return {}
-    if "=" not in raw:
-        return {default_name: raw}
-    cookies: dict[str, str] = {}
-    for part in raw.split(";"):
-        name, sep, value = part.strip().partition("=")
-        if sep and name:
-            cookies[name.strip()] = value.strip()
-    return cookies
+
+    # Full Cookie header: a=b; c=d
+    if ";" in raw:
+        cookies: dict[str, str] = {}
+        for part in raw.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name:
+                cookies[name.strip()] = value.strip().strip('"')
+        return cookies
+
+    # Single "Name=value…value" (value may contain '=')
+    name, sep, value = raw.partition("=")
+    if sep and name in _KNOWN_COOKIE_NAMES | {default_name}:
+        return {name: value.strip().strip('"')}
+
+    # Bare session token (possibly with '=' padding) → default cookie name
+    return {default_name: raw}
 
 
 def format_cookies(cookies: dict[str, str]) -> str:
@@ -118,7 +134,8 @@ class EneaClient:
 
     def _ensure_http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            jar = aiohttp.CookieJar()
+            # unsafe=True: accept manually injected host-only session cookies.
+            jar = aiohttp.CookieJar(unsafe=True)
             ebok = URL(ENEA_BASE_URL)
             sso = URL(ENEA_SSO_URL)
             jar.update_cookies(
@@ -181,32 +198,35 @@ class EneaClient:
     async def async_ensure_session(self) -> None:
         """Validate the handed-over session; renew via silent SSO when possible."""
         session = self._ensure_http()
-        async with session.get(
+        html = ""
+        final_url = URL(ENEA_BASE_URL)
+        probe_urls = (
+            f"{ENEA_BASE_URL}/dashboard",
             ENEA_METER_SUMMARY_REFERER,
-            headers={
-                **_BROWSERS,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-            allow_redirects=True,
-        ) as resp:
-            html = await resp.text()
-            final_url = resp.url
-
-        if self._bounced_to_login(final_url):
-            # Try once more via the login entrypoint — Moja PHPSESSID may complete OIDC.
+            ENEA_LOGIN_PAGE_URL,  # OIDC + PHPSESSID may complete silent SSO
+        )
+        for probe in probe_urls:
             async with session.get(
-                ENEA_LOGIN_PAGE_URL,
+                probe,
                 headers={
                     **_BROWSERS,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
                 allow_redirects=True,
-            ) as resp2:
-                html = await resp2.text()
-                final_url = resp2.url
+            ) as resp:
+                html = await resp.text()
+                final_url = resp.url
+            if not self._bounced_to_login(final_url):
+                break
 
         if self._bounced_to_login(final_url):
             self._ready = False
+            _LOGGER.warning(
+                "eBOK session rejected (final URL %s). Cookies present: ebok=%s sso=%s",
+                final_url,
+                bool(self._ebok_cookies.get(EBOK_COOKIE_NAME)),
+                bool(self._sso_cookies.get(SSO_COOKIE_NAME)),
+            )
             raise EneaClientAuthError(
                 "eBOK session expired — sign in again in a browser and paste "
                 "EBOK_SESSION (and preferably moja.enea.pl PHPSESSID)."

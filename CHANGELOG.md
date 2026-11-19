@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-11-19
+
+### Fixed
+
+- Cookie paste: bare `EBOK_SESSION` values that contain `=` are no longer mis-parsed (Chrome DevTools paste)
+- More robust session probe (`/dashboard` + meter page + silent SSO) before rejecting the session
+
 ## [1.1.0] - 2026-11-19
 
 ### Breaking
@@ -49,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Sync cursor no longer advances past unpublished eBOK days without energy data
 
+[1.1.1]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.1.1
 [1.1.0]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.1.0
 [1.0.2]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.2
 [1.0.1]: https://github.com/MIKOLAJW197/enea_energy/releases/tag/v1.0.1

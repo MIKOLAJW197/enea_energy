@@ -96,10 +96,15 @@ If you have **several contracts**, click **Zobacz** on the correct one first
 2. **Develop** → **Show Web Inspector** → **Storage** → **Cookies**.
 3. Select `ebok.enea.pl` → copy **`EBOK_SESSION`**.
 
-You may paste either:
+**Preferred paste format** (avoids Chrome copy quirks):
 
-- just the value, or
-- `EBOK_SESSION=……`, or
+```text
+EBOK_SESSION=wklej_tu_całą_wartość_z_kolumny_Value
+```
+
+Also accepted:
+
+- just the Value cell (even if it contains `=` characters),
 - a full `Cookie:` header from the Network tab.
 
 ### Step C — Copy `PHPSESSID` (strongly recommended)
