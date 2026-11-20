@@ -6,7 +6,7 @@ This repository contains a single Home Assistant **custom integration**, `enea_e
 for a metering point (PPE), and exposes three sensors for the current billing window:
 **bilans** (`export × recovery% − import`), **pobrana**, and **oddana** (raw export).
 
-No hourly external statistics — refresh is daily and sensors are period totals.
+No hourly external statistics — refresh is every 3 hours and sensors are period totals.
 
 The integration is UI-configured (config flow). Auth is e-mail + password.
 
@@ -31,7 +31,7 @@ The integration is UI-configured (config flow). Auth is e-mail + password.
 - **Billing period**: from dashboard `billingWeekData`. Each sync requests
   `start` → `start + 1 year − 1 day` once per series (pobrana + oddana) after
   balancing and reads **`sumConsumption`**.
-- **Refresh**: once daily at 07:00 local time (`async_track_time_change`), plus
+- **Refresh**: every 3 hours (`DataUpdateCoordinator.update_interval`), plus
   setup / reload.
 - **`default_config` / `go2rtc`**: may log a setup failure if the optional `go2rtc`
   binary is missing — unrelated to `enea_energy`.

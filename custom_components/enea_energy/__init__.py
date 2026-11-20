@@ -2,22 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING
 
-from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_track_time_change
 
-from .const import (
-    CONF_METER_ID,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    DAILY_CHECK_HOUR,
-    DAILY_CHECK_MINUTE,
-    DOMAIN,
-)
+from .const import CONF_METER_ID, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from .coordinator import EneaEnergyCoordinator
 
 if TYPE_CHECKING:
@@ -52,24 +42,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-def _schedule_daily_refresh(
-    hass: HomeAssistant, entry: ConfigEntry, coordinator: EneaEnergyCoordinator
-) -> None:
-    @callback
-    def _daily(_now: datetime) -> None:
-        hass.async_create_task(coordinator.async_request_refresh())
-
-    entry.async_on_unload(
-        async_track_time_change(
-            hass,
-            _daily,
-            hour=DAILY_CHECK_HOUR,
-            minute=DAILY_CHECK_MINUTE,
-            second=0,
-        )
-    )
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not str(entry.data.get(CONF_USERNAME) or "").strip() or not entry.data.get(
         CONF_PASSWORD
@@ -84,8 +56,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = EneaEnergyCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
-
-    _schedule_daily_refresh(hass, entry, coordinator)
 
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

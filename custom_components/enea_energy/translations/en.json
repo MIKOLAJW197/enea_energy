@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "Sign in to Portal Odbiorcy Enea. Hourly data is fetched **after balancing** for the whole period (start → +1 year). The billing period start is read automatically from the portal. Refresh runs once daily at 07:00.",
+        "description": "Sign in to Portal Odbiorcy Enea. Data is fetched **after balancing** for the whole period (start → +1 year). The billing period start is read automatically from the portal. Refresh runs every 3 hours.",
         "data": {
           "username": "E-mail",
           "password": "Password",

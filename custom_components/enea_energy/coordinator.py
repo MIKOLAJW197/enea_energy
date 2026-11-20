@@ -21,6 +21,7 @@ from .const import (
     CONF_USERNAME,
     DEFAULT_EXPORT_RECOVERY_PERCENT,
     DOMAIN,
+    UPDATE_INTERVAL_HOURS,
 )
 from .enea_client import (
     EneaClient,
@@ -45,7 +46,7 @@ def _period_end(start: date) -> date:
 
 
 class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Fetch period import/export totals once a day at 07:00."""
+    """Fetch period import/export totals every few hours."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
@@ -60,8 +61,12 @@ class EneaEnergyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=self._meter_id,
         )
 
-        # Daily 07:00 refresh is scheduled from __init__.py.
-        super().__init__(hass, _LOGGER, name=DOMAIN)
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=timedelta(hours=UPDATE_INTERVAL_HOURS),
+        )
 
     async def async_shutdown_client(self) -> None:
         await self._client.close()

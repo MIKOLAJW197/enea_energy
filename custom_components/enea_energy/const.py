@@ -15,9 +15,8 @@ CONF_EXPORT_RECOVERY_PERCENT = "export_recovery_percent"
 DEFAULT_EXPORT_RECOVERY_PERCENT = 80
 EXPORT_RECOVERY_PERCENT_OPTIONS = (70, 80)
 
-# Daily background refresh (Home Assistant local time).
-DAILY_CHECK_HOUR = 7
-DAILY_CHECK_MINUTE = 0
+# Coordinator poll interval (hours).
+UPDATE_INTERVAL_HOURS = 3
 
 PORTAL_URL = "https://portalodbiorcy.operator.enea.pl"
 PORTAL_API_BASE = f"{PORTAL_URL}/portalOdbiorcy/api"

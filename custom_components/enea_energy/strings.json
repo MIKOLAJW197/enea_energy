@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Enea Energy",
-        "description": "Logowanie do Portalu Odbiorcy Enea. Dane godzinowe są **po bilansowaniu** dla całego okresu (start → +1 rok). Początek okresu pobierany jest automatycznie z portalu. Odświeżanie raz dziennie o 7:00.",
+        "description": "Logowanie do Portalu Odbiorcy Enea. Dane są **po bilansowaniu** dla całego okresu (start → +1 rok). Początek okresu pobierany jest automatycznie z portalu. Odświeżanie co 3 godziny.",
         "data": {
           "username": "E-mail",
           "password": "Hasło",

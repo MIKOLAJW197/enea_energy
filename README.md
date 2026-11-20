@@ -31,10 +31,9 @@ API access follows the same Portal endpoints as
    Example: `…/consumption/105171/2026-02-01/2027-01-31/1/2/2`.
 
    Sensors use the response field **`sumConsumption`** (kWh for the whole window).
-   No hourly history is stored — refresh is once per day, and the entities are
+   No hourly history is stored — refresh is every 3 hours, and the entities are
    period totals, not a time series.
-4. **Refresh** — once a day at **07:00** (Home Assistant local time), plus on
-   setup / reload.
+4. **Refresh** — every **3 hours**, plus on setup / reload.
 5. **Sensors**
 
    | Sensor | Formula |
@@ -48,7 +47,7 @@ API access follows the same Portal endpoints as
 - E-mail + password login (no browser cookie paste)
 - Period totals **po bilansowaniu**
 - Auto-detected billing period start from the portal
-- Daily refresh at 07:00 local time
+- Refresh every 3 hours
 - Prosumer recovery **70% / 80%** on the balance sensor only
 - Reconfigure + reauth flows
 
@@ -80,7 +79,7 @@ API access follows the same Portal endpoints as
 2. Choose **70%** or **80%** export recovery (prosumer net-metering).
 3. If the account has several PPEs, pick the metering point from the list.
 
-The billing period start and the daily 07:00 refresh need no extra settings.
+The billing period start and the 3-hour refresh need no extra settings.
 
 ## Local smoke test
 
